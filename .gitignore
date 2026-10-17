@@ -1,0 +1,6 @@
+# Binaries
+guix-sync-server
+
+# Local database files
+*.db
+*.db.tmp

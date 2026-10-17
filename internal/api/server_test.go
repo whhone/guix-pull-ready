@@ -1,0 +1,123 @@
+package api
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"guix-evaluated/internal/cuirass"
+	"guix-evaluated/internal/resolver"
+	"guix-evaluated/internal/store"
+)
+
+func setupTestServer(t *testing.T) *Server {
+	t.Helper()
+	st, err := store.Open(":memory:", "https://ci.guix.gnu.org", []string{"x86_64-linux"})
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+
+	now := time.Date(2026, 10, 17, 14, 0, 0, 0, time.UTC)
+	st.UpdateEvaluations([]store.EvaluationRecord{
+		{ID: 700, Commit: "aaaa1111bbbb2222cccc3333dddd4444eeee5555", Timestamp: now},
+		{ID: 699, Commit: "ffff6666eeee7777dddd8888cccc9999bbbb0000", Timestamp: now.Add(-time.Hour)},
+	}, 40)
+
+	// Eval 700 has 1 pending build (libreoffice), but emacs & git succeeded
+	st.SetPullStatus("aaaa1111bbbb2222cccc3333dddd4444eeee5555", "x86_64-linux", 1700, true)
+	st.UpsertSystemEval(700, "aaaa1111bbbb2222cccc3333dddd4444eeee5555", "x86_64-linux", []cuirass.Job{
+		{BuildID: 1, Name: "emacs.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "29.4"},
+		{BuildID: 2, Name: "git.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "2.46.0"},
+		{BuildID: 3, Name: "libreoffice.x86_64-linux", Status: cuirass.StatusScheduled, Version: "24.8"},
+	})
+
+	// Eval 699 has 0 pending builds
+	st.SetPullStatus("ffff6666eeee7777dddd8888cccc9999bbbb0000", "x86_64-linux", 1699, true)
+	st.UpsertSystemEval(699, "ffff6666eeee7777dddd8888cccc9999bbbb0000", "x86_64-linux", []cuirass.Job{
+		{BuildID: 10, Name: "emacs.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "29.4"},
+		{BuildID: 11, Name: "git.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "2.46.0"},
+		{BuildID: 12, Name: "libreoffice.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "24.8"},
+	})
+
+	_ = st.Save()
+	return NewServer(st, nil, nil)
+}
+
+func TestGetCommitWholeEvalAndPackageMode(t *testing.T) {
+	srv := setupTestServer(t)
+
+	// 1. Whole-evaluation mode (default max_pending=0) -> Eval 699
+	req := httptest.NewRequest(http.MethodGet, "/v1/commit?system=x86_64-linux", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := strings.TrimSpace(rec.Body.String()); got != "ffff6666eeee7777dddd8888cccc9999bbbb0000" {
+		t.Fatalf("got commit %q, want ffff6666...", got)
+	}
+
+	// 2. Package mode via GET ?pkgs=emacs,git -> Eval 700
+	req = httptest.NewRequest(http.MethodGet, "/v1/commit?pkgs=emacs,git", nil)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := strings.TrimSpace(rec.Body.String()); got != "aaaa1111bbbb2222cccc3333dddd4444eeee5555" {
+		t.Fatalf("got commit %q, want aaaa1111...", got)
+	}
+}
+
+func TestPostPackageManifestAndChannelsSCM(t *testing.T) {
+	srv := setupTestServer(t)
+
+	// POST newline-separated package list to /v1/channels.scm
+	body := strings.NewReader("emacs\ngit\nmy-custom-pkg\n")
+	req := httptest.NewRequest(http.MethodPost, "/v1/channels.scm", body)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	out := rec.Body.String()
+	if !strings.Contains(out, `(commit "aaaa1111bbbb2222cccc3333dddd4444eeee5555")`) {
+		t.Fatalf("channels.scm missing expected commit:\n%s", out)
+	}
+	if !strings.Contains(out, "Skipped local:       my-custom-pkg") {
+		t.Fatalf("channels.scm missing skipped local comment:\n%s", out)
+	}
+}
+
+func TestStatusJSONAndHealthz(t *testing.T) {
+	srv := setupTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/status?system=x86_64-linux", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var res resolver.Result
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if res.EvaluationID != 699 || !res.PullReady {
+		t.Fatalf("unexpected status result: %+v", res)
+	}
+
+	// Healthz
+	req = httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("healthz status = %d, want 200", rec.Code)
+	}
+}
