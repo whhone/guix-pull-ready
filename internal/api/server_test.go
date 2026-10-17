@@ -137,6 +137,10 @@ func TestDashboardHTMLAndPlainIndex(t *testing.T) {
 	body := rec.Body.String()
 	for _, want := range []string{
 		"guix-sync-commit Dashboard",
+		"Latest Commit with All Prebuilts Ready on Substitutes",
+		"Latest Master Evaluation",
+		"Date (Local)",
+		`class="local-time" data-utc="`,
 		"#700",
 		"#699",
 		"libreoffice",

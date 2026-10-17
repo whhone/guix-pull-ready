@@ -437,7 +437,42 @@ func renderHTMLDashboard(st dashboardState) string {
     font-size: 0.74rem;
     color: var(--muted);
   }
+  .local-time[data-utc]:not([data-formatted]) { visibility: hidden; }
 </style>
+<noscript><style>.local-time[data-utc] { visibility: visible !important; }</style></noscript>
+<script>
+function formatLocalTimes() {
+  const pad = (n) => String(n).padStart(2, "0");
+  let tzAbbr = "";
+  try {
+    const parts = new Intl.DateTimeFormat(undefined, { timeZoneName: "short" }).formatToParts(new Date());
+    const tzPart = parts.find((p) => p.type === "timeZoneName");
+    if (tzPart && tzPart.value) tzAbbr = " " + tzPart.value;
+  } catch (_) {}
+
+  document.querySelectorAll(".local-time[data-utc]:not([data-formatted])").forEach((el) => {
+    const raw = el.getAttribute("data-utc");
+    if (!raw) return;
+    const d = new Date(raw);
+    if (isNaN(d.getTime())) {
+      el.setAttribute("data-formatted", "1");
+      return;
+    }
+    const y = d.getFullYear();
+    const m = pad(d.getMonth() + 1);
+    const day = pad(d.getDate());
+    const hh = pad(d.getHours());
+    const mm = pad(d.getMinutes());
+    if (el.getAttribute("data-show-sec") === "1") {
+      const ss = pad(d.getSeconds());
+      el.textContent = y + "-" + m + "-" + day + " " + hh + ":" + mm + ":" + ss + tzAbbr;
+    } else {
+      el.textContent = y + "-" + m + "-" + day + " " + hh + ":" + mm;
+    }
+    el.setAttribute("data-formatted", "1");
+  });
+}
+</script>
 </head>
 <body>
 <div class="container">
@@ -454,9 +489,12 @@ func renderHTMLDashboard(st dashboardState) string {
 		syncBadge = fmt.Sprintf(`<span class="badge badge-err" title="%s">Poll Warning</span>`, html.EscapeString(st.LastPollError))
 	}
 
-	lastSyncStr := "never"
+	lastSyncHTML := "never"
 	if !st.LastSyncedAt.IsZero() {
-		lastSyncStr = st.LastSyncedAt.UTC().Format("2006-01-02 15:04:05 UTC")
+		utcStr := st.LastSyncedAt.UTC().Format("2006-01-02 15:04:05 UTC")
+		isoStr := st.LastSyncedAt.UTC().Format(time.RFC3339)
+		lastSyncHTML = fmt.Sprintf(`<span class="local-time" data-utc="%s" data-show-sec="1" title="%s">%s</span>`,
+			html.EscapeString(isoStr), html.EscapeString(utcStr), html.EscapeString(utcStr))
 	}
 
 	fmt.Fprintf(&b, `
@@ -472,7 +510,8 @@ func renderHTMLDashboard(st dashboardState) string {
       <a href="/v1/evaluations?system=%s" class="btn mono">/v1/evaluations</a>
     </div>
   </div>
-`, syncBadge, escServerURL, escServerURL, st.TotalEvals, html.EscapeString(lastSyncStr), html.EscapeString(activeSys))
+  <script>formatLocalTimes();</script>
+`, syncBadge, escServerURL, escServerURL, st.TotalEvals, lastSyncHTML, html.EscapeString(activeSys))
 
 	// 2. Architecture Selector Tabs
 	b.WriteString(`  <div class="arch-bar"><div class="tabs">`)
@@ -486,10 +525,10 @@ func renderHTMLDashboard(st dashboardState) string {
 	}
 	b.WriteString(`</div></div>`)
 
-	// 3. Summary Cards for Active System
+	// 3. Summary Cards for Active System (2-Card Banner)
 	b.WriteString(`  <div class="cards">`)
 
-	// Card A: Strict Ready (max_pending = 0)
+	// Card A: Latest Commit with All Prebuilts Ready on Substitutes, falling back to Closest to Ready if none has 0 pending
 	b.WriteString(`<div class="card">`)
 	if ov.StrictReady != nil {
 		r := ov.StrictReady
@@ -499,7 +538,7 @@ func renderHTMLDashboard(st dashboardState) string {
 			pullBadge = `<span class="badge badge-ok">guix pull: ready</span>`
 		}
 		fmt.Fprintf(&b, `
-      <div class="card-title"><span>Strict Ready (0 Pending)</span>%s</div>
+      <div class="card-title"><span>Latest Commit with All Prebuilts Ready on Substitutes</span>%s</div>
       <div class="card-commit mono">
         <a href="https://codeberg.org/guix/guix/commit/%s" target="_blank" rel="noopener">%s</a>
       </div>
@@ -515,30 +554,10 @@ func renderHTMLDashboard(st dashboardState) string {
 			html.EscapeString(r.Commit),
 		)
 	} else if ov.BestAvailable != nil {
-		fmt.Fprintf(&b, `
-      <div class="card-title"><span>Strict Ready (0 Pending)</span><span class="badge badge-warn">None in last %d</span></div>
-      <div class="card-commit mono" style="color:var(--muted);font-size:0.95rem;">No eval has 0 pending jobs</div>
-      <div class="card-meta">Lowest pending count in window is <strong>%d jobs</strong> (Eval #%d). Use <code>max_pending=%d</code> or package mode below.</div>`,
-			len(ov.Evaluations), ov.BestAvailable.PendingCount, ov.BestAvailable.EvaluationID, ov.BestAvailable.PendingCount,
-		)
-	} else {
-		b.WriteString(`
-      <div class="card-title"><span>Strict Ready (0 Pending)</span><span class="badge badge-warn">Warming up</span></div>
-      <div class="card-meta">Initial evaluation sync from Cuirass is in progress.</div>`)
-	}
-	b.WriteString(`</div>`)
-
-	// Card B: Best Available (Lowest Pending)
-	b.WriteString(`<div class="card">`)
-	if ov.BestAvailable != nil {
 		r := ov.BestAvailable
 		short := shortCommit(r.Commit)
-		pullBadge := `<span class="badge badge-warn">guix pull: building</span>`
-		if r.PullReady {
-			pullBadge = `<span class="badge badge-ok">guix pull: ready</span>`
-		}
 		fmt.Fprintf(&b, `
-      <div class="card-title"><span>Best Available (%d Pending)</span>%s</div>
+      <div class="card-title"><span>Closest to Ready (%d Pending)</span><span class="badge badge-warn">No 0-pending in last %d</span></div>
       <div class="card-commit mono">
         <a href="https://codeberg.org/guix/guix/commit/%s" target="_blank" rel="noopener">%s</a>
       </div>
@@ -547,7 +566,7 @@ func renderHTMLDashboard(st dashboardState) string {
         <button type="button" data-copy="%s" onclick="copyFromBtn(this)">Copy Commit</button>
         <button type="button" data-copy="guix pull --commit=%s" onclick="copyFromBtn(this)">Copy guix pull</button>
       </div>`,
-			r.PendingCount, pullBadge,
+			r.PendingCount, len(ov.Evaluations),
 			html.EscapeString(r.Commit), html.EscapeString(short),
 			escServerURL, r.EvaluationID, r.EvaluationID, r.EvaluationsBehind, r.SucceededCount,
 			html.EscapeString(r.Commit),
@@ -555,12 +574,12 @@ func renderHTMLDashboard(st dashboardState) string {
 		)
 	} else {
 		b.WriteString(`
-      <div class="card-title"><span>Best Available</span></div>
-      <div class="card-meta">Waiting for evaluation data...</div>`)
+      <div class="card-title"><span>Latest Commit with All Prebuilts Ready on Substitutes</span><span class="badge badge-warn">Warming up</span></div>
+      <div class="card-meta">Initial evaluation sync from Cuirass is in progress.</div>`)
 	}
 	b.WriteString(`</div>`)
 
-	// Card C: Latest Master Evaluation
+	// Card B: Latest Master Evaluation
 	b.WriteString(`<div class="card">`)
 	if ov.LatestEval != nil {
 		le := ov.LatestEval
@@ -570,7 +589,7 @@ func renderHTMLDashboard(st dashboardState) string {
 			pct = float64(le.SucceededJobs) * 100.0 / float64(le.TotalJobs)
 		}
 		fmt.Fprintf(&b, `
-      <div class="card-title"><span>Latest Master Eval</span><span class="badge badge-neutral">%.1f%% Built</span></div>
+      <div class="card-title"><span>Latest Master Evaluation</span><span class="badge badge-neutral">%.1f%% Built</span></div>
       <div class="card-commit mono">
         <a href="https://codeberg.org/guix/guix/commit/%s" target="_blank" rel="noopener">%s</a>
       </div>
@@ -587,7 +606,7 @@ func renderHTMLDashboard(st dashboardState) string {
 		)
 	} else {
 		b.WriteString(`
-      <div class="card-title"><span>Latest Master Eval</span></div>
+      <div class="card-title"><span>Latest Master Evaluation</span></div>
       <div class="card-meta">Waiting for evaluation data...</div>`)
 	}
 	b.WriteString(`</div></div>`)
@@ -641,7 +660,7 @@ func renderHTMLDashboard(st dashboardState) string {
           <tr>
             <th>Eval</th>
             <th>Commit</th>
-            <th>Date (UTC)</th>
+            <th>Date (Local)</th>
             <th class="prog-cell">Build Progress</th>
             <th>guix pull</th>
             <th>Pending Sample</th>
@@ -651,9 +670,13 @@ func renderHTMLDashboard(st dashboardState) string {
 `)
 		for idx, item := range ov.Evaluations {
 			short := shortCommit(item.Commit)
-			dateStr := "unknown"
+			dateCell := `<td class="mono" style="white-space:nowrap;">unknown</td>`
 			if !item.Timestamp.IsZero() {
-				dateStr = item.Timestamp.UTC().Format("2006-01-02 15:04")
+				utcStr := item.Timestamp.UTC().Format("2006-01-02 15:04:05 UTC")
+				shortUTC := item.Timestamp.UTC().Format("2006-01-02 15:04")
+				isoStr := item.Timestamp.UTC().Format(time.RFC3339)
+				dateCell = fmt.Sprintf(`<td class="mono local-time" style="white-space:nowrap;" data-utc="%s" title="%s">%s</td>`,
+					html.EscapeString(isoStr), html.EscapeString(utcStr), html.EscapeString(shortUTC))
 			}
 
 			okPct, warnPct, errPct := 0.0, 0.0, 0.0
@@ -702,7 +725,7 @@ func renderHTMLDashboard(st dashboardState) string {
               <a href="https://codeberg.org/guix/guix/commit/%s" target="_blank" rel="noopener">%s</a>
               <button type="button" data-copy="%s" onclick="copyFromBtn(this)" style="padding:0.1rem 0.4rem;font-size:0.72rem;margin-left:0.3rem;">Copy</button>
             </td>
-            <td class="mono" style="white-space:nowrap;">%s</td>
+            %s
             <td class="prog-cell">
               <div class="prog-bar">
                 <div class="prog-ok" style="width:%.2f%%"></div>
@@ -720,7 +743,7 @@ func renderHTMLDashboard(st dashboardState) string {
           </tr>`,
 				escServerURL, item.EvaluationID, item.EvaluationID, idx,
 				html.EscapeString(item.Commit), html.EscapeString(short), html.EscapeString(item.Commit),
-				html.EscapeString(dateStr),
+				dateCell,
 				okPct, warnPct, errPct,
 				item.SucceededJobs, item.PendingJobs, item.FailedJobs,
 				pullCell,
@@ -730,7 +753,8 @@ func renderHTMLDashboard(st dashboardState) string {
 		b.WriteString(`
         </tbody>
       </table>
-    </div>`)
+    </div>
+    <script>formatLocalTimes();</script>`)
 	}
 	b.WriteString(`</div>`)
 
@@ -758,12 +782,13 @@ guix package --list-installed | cut -f1 | curl -fsSL --data-binary @- "%s/v1/com
 		escBaseURL, html.EscapeString(activeSys),
 	)
 
-	// Embedded Script for Copy & Interactive Resolver
+	// Embedded Script for Copy, Local Timezone Formatting & Interactive Resolver
 	fmt.Fprintf(&b, `
 </div>
 <script>
 const DASHBOARD_STATE = %s;
 const ACTIVE_SYSTEM = %q;
+formatLocalTimes();
 
 function copyFromBtn(btn) {
   const text = btn.getAttribute("data-copy");
