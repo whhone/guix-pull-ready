@@ -121,3 +121,45 @@ func TestStatusJSONAndHealthz(t *testing.T) {
 		t.Fatalf("healthz status = %d, want 200", rec.Code)
 	}
 }
+
+func TestDashboardHTMLAndPlainIndex(t *testing.T) {
+	srv := setupTestServer(t)
+
+	// 1. Browser request (HTML Dashboard)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Accept", "text/html")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"guix-sync-commit Dashboard",
+		"#700",
+		"#699",
+		"libreoffice",
+		"Interactive Commit &amp; Package Resolver",
+		`data-copy="guix pull --commit=ffff6666eeee7777dddd8888cccc9999bbbb0000" onclick="copyFromBtn(this)"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("HTML dashboard missing %q", want)
+		}
+	}
+
+	// 2. curl request (Plain-Text Summary)
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("User-Agent", "curl/8.5.0")
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	plain := rec.Body.String()
+	if !strings.Contains(plain, "ffff6666eeee7777dddd8888cccc9999bbbb0000") {
+		t.Fatalf("plain index missing ready commit:\n%s", plain)
+	}
+}
+

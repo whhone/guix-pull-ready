@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html"
 	"io"
 	"log/slog"
 	"net/http"
@@ -158,36 +157,14 @@ func (s *Server) handleEvaluations(w http.ResponseWriter, r *http.Request) {
 		sys = defaultSystem(snap)
 	}
 	limit := parseIntParam(r.URL.Query().Get("limit"), 20, 1, 100)
-
-	items := make([]evaluationSummaryItem, 0, limit)
-	for _, ev := range snap.Evaluations {
-		if len(items) >= limit {
-			break
-		}
-		data, ok := snap.ByEvalSystem[store.EvalSystemKey{EvalID: ev.ID, System: sys}]
-		if !ok {
-			continue
-		}
-		items = append(items, evaluationSummaryItem{
-			EvaluationID:  ev.ID,
-			Commit:        ev.Commit,
-			Timestamp:     ev.Timestamp,
-			System:        sys,
-			TotalJobs:     data.TotalJobs,
-			SucceededJobs: data.SucceededJobs,
-			PendingJobs:   data.PendingJobs,
-			FailedJobs:    data.FailedJobs,
-			PendingSample: data.PendingSample,
-			PullReady:     data.PullReady,
-			PullEvalID:    data.PullEvalID,
-			Complete:      data.Complete,
-		})
-	}
+	ov := buildSystemOverview(snap, sys, limit)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"system":         sys,
 		"last_synced_at": snap.LastSyncedAt,
-		"evaluations":    items,
+		"strict_ready":   ov.StrictReady,
+		"best_available": ov.BestAvailable,
+		"evaluations":    ov.Evaluations,
 	})
 }
 
@@ -199,35 +176,24 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 
 	snap := s.store.Snapshot()
 	baseURL := detectBaseURL(r)
-
-	var summaries []*resolver.Result
-	if snap != nil {
-		for _, sys := range snap.Systems {
-			if res, err := resolver.Resolve(snap, resolver.Query{System: sys, MaxPending: 0}); err == nil {
-				summaries = append(summaries, res)
-			}
-		}
-	}
+	requestedSys := r.URL.Query().Get("system")
+	st := buildDashboardState(baseURL, snap, s.poller, requestedSys)
 
 	accept := r.Header.Get("Accept")
 	ua := strings.ToLower(r.Header.Get("User-Agent"))
 	if strings.Contains(accept, "application/json") {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"service":        "guix-sync-commit",
-			"systems":        summaries,
-			"last_synced_at": snapLastSync(snap),
-		})
+		writeJSON(w, http.StatusOK, st)
 		return
 	}
 
 	if strings.HasPrefix(ua, "curl/") || strings.HasPrefix(ua, "wget/") || strings.Contains(accept, "text/plain") {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		_, _ = io.WriteString(w, renderPlainIndex(baseURL, summaries, snapLastSync(snap)))
+		_, _ = io.WriteString(w, renderPlainIndex(st))
 		return
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = io.WriteString(w, renderHTMLIndex(baseURL, summaries, snapLastSync(snap)))
+	_, _ = io.WriteString(w, renderHTMLDashboard(st))
 }
 
 func (s *Server) resolveRequest(r *http.Request) (*resolver.Result, error) {
@@ -339,13 +305,6 @@ func defaultSystem(snap *store.Snapshot) string {
 	return "x86_64-linux"
 }
 
-func snapLastSync(snap *store.Snapshot) time.Time {
-	if snap == nil {
-		return time.Time{}
-	}
-	return snap.LastSyncedAt
-}
-
 func detectBaseURL(r *http.Request) string {
 	scheme := "http"
 	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
@@ -393,107 +352,4 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	_ = enc.Encode(payload)
-}
-
-func renderPlainIndex(baseURL string, summaries []*resolver.Result, lastSync time.Time) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "guix-sync-commit service\n")
-	fmt.Fprintf(&b, "========================\n\n")
-	if len(summaries) == 0 {
-		fmt.Fprintf(&b, "Status: Warming up cache from Cuirass...\n\n")
-	} else {
-		fmt.Fprintf(&b, "Current Ready Commits (whole-evaluation, max_pending=0):\n")
-		for _, r := range summaries {
-			fmt.Fprintf(&b, "  %-16s %s  (eval %d, %d behind master, pull_ready=%v)\n",
-				r.System+":", r.Commit, r.EvaluationID, r.EvaluationsBehind, r.PullReady)
-		}
-		if !lastSync.IsZero() {
-			fmt.Fprintf(&b, "\nLast synced: %s\n\n", lastSync.UTC().Format("2006-01-02 15:04:05 UTC"))
-		}
-	}
-
-	fmt.Fprintf(&b, "Usage Examples:\n")
-	fmt.Fprintf(&b, "  # 1. Pull latest ready commit for x86_64-linux:\n")
-	fmt.Fprintf(&b, "  guix pull --commit=$(curl -fsSL \"%s/v1/commit?system=x86_64-linux\")\n\n", baseURL)
-	fmt.Fprintf(&b, "  # 2. Generate ~/.config/guix/channels.scm:\n")
-	fmt.Fprintf(&b, "  curl -fsSL \"%s/v1/channels.scm?system=x86_64-linux\" > ~/.config/guix/channels.scm\n\n", baseURL)
-	fmt.Fprintf(&b, "  # 3. Query specific packages (e.g. emacs, git, gcc-toolchain@14):\n")
-	fmt.Fprintf(&b, "  curl -fsSL \"%s/v1/commit?pkgs=emacs,git,gcc-toolchain@14\"\n\n", baseURL)
-	fmt.Fprintf(&b, "  # 4. Pipe installed packages to find a commit where all your packages are built:\n")
-	fmt.Fprintf(&b, "  guix package --list-installed | cut -f1 | curl -fsSL --data-binary @- \"%s/v1/commit\"\n\n", baseURL)
-	fmt.Fprintf(&b, "  # 5. Inspect detailed JSON status:\n")
-	fmt.Fprintf(&b, "  curl -fsSL \"%s/v1/status?system=x86_64-linux\"\n", baseURL)
-	return b.String()
-}
-
-func renderHTMLIndex(baseURL string, summaries []*resolver.Result, lastSync time.Time) string {
-	var b strings.Builder
-	b.WriteString(`<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>guix-sync-commit service</title>
-<style>
-  body { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; max-width: 880px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; color: #1f2328; background: #ffffff; }
-  h1, h2 { border-bottom: 1px solid #d0d7de; padding-bottom: 0.3rem; }
-  pre { background: #f6f8fa; padding: 0.9rem; border-radius: 6px; overflow-x: auto; border: 1px solid #d0d7de; }
-  table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
-  th, td { border: 1px solid #d0d7de; padding: 0.5rem 0.75rem; text-align: left; }
-  th { background: #f6f8fa; }
-  .badge { display: inline-block; padding: 0.1rem 0.45rem; border-radius: 4px; font-size: 0.85rem; }
-  .ok { background: #dafbe1; color: #1a7f37; }
-  .warn { background: #fff8c5; color: #9a6700; }
-</style>
-</head>
-<body>
-<h1>guix-sync-commit</h1>
-<p>Find the newest GNU Guix commit whose substitutes are ready on <code>ci.guix.gnu.org</code>.</p>
-`)
-
-	b.WriteString("<h2>Current Ready Commits</h2>\n")
-	if len(summaries) == 0 {
-		b.WriteString("<p><span class=\"badge warn\">Warming up</span> Initial evaluation sync from Cuirass is in progress.</p>\n")
-	} else {
-		b.WriteString("<table><thead><tr><th>System</th><th>Commit</th><th>Evaluation</th><th>Lag</th><th>guix pull</th></tr></thead><tbody>\n")
-		for _, r := range summaries {
-			pullBadge := `<span class="badge warn">Building</span>`
-			if r.PullReady {
-				pullBadge = `<span class="badge ok">Ready</span>`
-			}
-			fmt.Fprintf(&b, "<tr><td><code>%s</code></td><td><code>%s</code></td><td>%d</td><td>%d behind</td><td>%s</td></tr>\n",
-				html.EscapeString(r.System),
-				html.EscapeString(r.Commit),
-				r.EvaluationID,
-				r.EvaluationsBehind,
-				pullBadge,
-			)
-		}
-		b.WriteString("</tbody></table>\n")
-		if !lastSync.IsZero() {
-			fmt.Fprintf(&b, "<p><small>Last synced: %s</small></p>\n", html.EscapeString(lastSync.UTC().Format("2006-01-02 15:04:05 UTC")))
-		}
-	}
-
-	escURL := html.EscapeString(baseURL)
-	fmt.Fprintf(&b, `<h2>CLI &amp; Script Usage</h2>
-<pre># 1. Pull the latest ready commit
-guix pull --commit=$(curl -fsSL "%s/v1/commit?system=x86_64-linux")
-
-# 2. Generate ~/.config/guix/channels.scm
-curl -fsSL "%s/v1/channels.scm?system=x86_64-linux" &gt; ~/.config/guix/channels.scm
-
-# 3. Query specific packages
-curl -fsSL "%s/v1/commit?pkgs=emacs,git,gcc-toolchain@14"
-
-# 4. POST a list of installed packages
-guix package --list-installed | cut -f1 | curl -fsSL --data-binary @- "%s/v1/commit"
-
-# 5. JSON status
-curl -fsSL "%s/v1/status?system=x86_64-linux"</pre>
-</body>
-</html>
-`, escURL, escURL, escURL, escURL, escURL)
-
-	return b.String()
 }

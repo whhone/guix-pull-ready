@@ -166,7 +166,8 @@ type Build struct {
 	JobName    string    `json:"job"`
 	NixName    string    `json:"nixname"`
 	Derivation string    `json:"derivation"`
-	Status     JobStatus `json:"status"`
+	Status     JobStatus `json:"buildstatus"`
+	Finished   int       `json:"finished"`
 	System     string    `json:"system"`
 }
 
