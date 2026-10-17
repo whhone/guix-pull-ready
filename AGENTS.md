@@ -75,6 +75,10 @@ go run ./cmd/guix-sync-server --db-path=:memory:
 ./guix-sync-server --listen=:8080 --db-path=./guix-sync.db --systems=x86_64-linux,aarch64-linux --limit=40
 ```
 
+**Why `CGO_ENABLED=0` for static builds:**
+- By default on Linux (`CGO_ENABLED=1`), Go's standard library `net` package links against the host's C library (`glibc` / `libc.so.6`) for `getaddrinfo()` DNS resolution, producing a dynamically linked binary with a hardcoded ELF interpreter path (such as `/lib64/ld-linux-x86-64.so.2` or `/gnu/store/...-glibc-.../lib/ld-linux-x86-64.so.2`).
+- Setting `CGO_ENABLED=0` forces Go to use its built-in pure-Go DNS resolver (`netgo`), producing a self-contained static binary that runs across standard Linux distributions, GNU Guix (non-FHS), and minimal `libc`-less container images (`Containerfile`). For local development on the same host (`go build` or `go run`), `CGO_ENABLED=0` is optional.
+
 ### Run Reference Guile Script
 ```bash
 # Whole-evaluation mode
