@@ -194,14 +194,6 @@ func (p *Poller) syncEvaluations(ctx context.Context) error {
 		}
 	}
 
-	// Reconcile any cached evaluations with <= 5 pending jobs whose BuildID has already
-	// reached a terminal status (succeeded or failed) in neighboring evaluations.
-	for _, sys := range p.cfg.Systems {
-		if p.reconcileStalePendingJobs(ctx, sys) > 0 {
-			p.store.PublishSnapshot()
-		}
-	}
-
 	if err := p.store.Save(); err != nil {
 		log.Warn("failed to save store state", "err", err)
 	}
@@ -211,94 +203,6 @@ func (p *Poller) syncEvaluations(ctx context.Context) error {
 		"updated_eval_systems", updatedCount,
 	)
 	return nil
-}
-
-// reconcileStalePendingJobs queries /api/jobs/history for cached evaluations that have only a few
-// pending jobs (<= 5) and reconciles any job whose BuildID has already finished in another evaluation.
-func (p *Poller) reconcileStalePendingJobs(ctx context.Context, system string) int {
-	const (
-		nearCompletePendingThreshold = 5
-		historyChunkSize             = 15
-	)
-	pendingByEval := p.store.NearCompletePendingSamples(system, nearCompletePendingThreshold)
-	if len(pendingByEval) == 0 {
-		return 0
-	}
-
-	seenNames := make(map[string]bool)
-	var uniqueNames []string
-	for _, names := range pendingByEval {
-		for _, name := range names {
-			if name != "" && !seenNames[name] {
-				seenNames[name] = true
-				uniqueNames = append(uniqueNames, name)
-			}
-		}
-	}
-	if len(uniqueNames) == 0 {
-		return 0
-	}
-
-	terminalBuilds := make(map[int64]cuirass.JobStatus)
-	type pendingEvalJob struct {
-		evalID int64
-		job    cuirass.Job
-	}
-	var candidates []pendingEvalJob
-
-	for start := 0; start < len(uniqueNames); start += historyChunkSize {
-		if ctx.Err() != nil {
-			break
-		}
-		end := start + historyChunkSize
-		if end > len(uniqueNames) {
-			end = len(uniqueNames)
-		}
-		history, err := p.client.JobsHistory(ctx, "master", uniqueNames[start:end], p.cfg.Limit)
-		if err != nil {
-			p.cfg.Logger.Warn("failed to fetch jobs history for reconciliation",
-				"system", system,
-				"err", err,
-			)
-			continue
-		}
-		for _, h := range history {
-			_, isTargetEval := pendingByEval[h.Evaluation]
-			for _, j := range h.Jobs {
-				if j.BuildID <= 0 {
-					continue
-				}
-				if !j.Status.IsPending() {
-					terminalBuilds[j.BuildID] = j.Status
-				} else if isTargetEval {
-					candidates = append(candidates, pendingEvalJob{
-						evalID: h.Evaluation,
-						job:    j,
-					})
-				}
-			}
-		}
-	}
-
-	reconciled := 0
-	for _, cand := range candidates {
-		termStatus, ok := terminalBuilds[cand.job.BuildID]
-		if !ok {
-			continue
-		}
-		if p.store.ReconcilePendingJob(cand.evalID, system, cand.job.Name, cand.job.BuildID, termStatus) {
-			reconciled++
-			p.cfg.Logger.Info("reconciled stale Cuirass job status across evaluations",
-				"eval_id", cand.evalID,
-				"system", system,
-				"job", cand.job.Name,
-				"build_id", cand.job.BuildID,
-				"stale_status", cand.job.Status.String(),
-				"reconciled_status", termStatus.String(),
-			)
-		}
-	}
-	return reconciled
 }
 
 func (p *Poller) checkGuixPullReady(ctx context.Context, pullEvalID int64, system string) bool {

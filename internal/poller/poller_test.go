@@ -59,8 +59,6 @@ func TestPollerIncrementalSyncAndBuildCache(t *testing.T) {
 				_, _ = w.Write([]byte(`[{"build":2499,"status":0,"name":"guix.x86_64-linux"}]`))
 			}
 
-		case "/api/jobs/history":
-			_, _ = w.Write([]byte(`[]`))
 		case "/build/902":
 			buildCalls.Add(1)
 			_, _ = w.Write([]byte(`{"id":902,"derivation":"/gnu/store/aaaa-gcc-toolchain-14.2.0.drv","buildstatus":-1,"finished":0}`))
@@ -119,89 +117,5 @@ func TestPollerIncrementalSyncAndBuildCache(t *testing.T) {
 	}
 	if buildCalls.Load() != 2 {
 		t.Fatalf("expected 2 build calls, got %d", buildCalls.Load())
-	}
-}
-
-func TestPollerReconcileStalePendingBuilds(t *testing.T) {
-	var eval2213239Calls atomic.Int32
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/api/evaluations":
-			spec := r.URL.Query().Get("spec")
-			if spec == "guix" {
-				_, _ = w.Write([]byte(`[]`))
-				return
-			}
-			_, _ = w.Write([]byte(`[
-				{"id":2213266,"specification":"master","timestamp":1728720000,"checkouts":[{"commit":"03460e6f8812291b3cf6183bde32366607f46379","channel":"guix"}]},
-				{"id":2213239,"specification":"master","timestamp":1728712101,"checkouts":[{"commit":"2d4d9f167f75f45e3d86b62f8309bb4ce7f145e2","channel":"guix"}]}
-			]`))
-
-		case "/api/jobs":
-			evalID := r.URL.Query().Get("evaluation")
-			if evalID == "2213266" {
-				_, _ = w.Write([]byte(`[
-					{"build":25952400,"status":0,"name":"emacs.x86_64-linux"},
-					{"build":25952413,"status":0,"name":"tdlib.x86_64-linux"}
-				]`))
-				return
-			}
-			eval2213239Calls.Add(1)
-			// Simulate Cuirass Jobs table desync: tdlib.x86_64-linux has stale status -1 (started)
-			// for build 25952413 even though build 25952413 succeeded in evaluation 2213266.
-			_, _ = w.Write([]byte(`[
-				{"build":25952400,"status":0,"name":"emacs.x86_64-linux"},
-				{"build":25952413,"status":-1,"name":"tdlib.x86_64-linux"}
-			]`))
-
-		case "/api/jobs/history":
-			_, _ = w.Write([]byte(`[
-				{"evaluation":2213266,"jobs":[{"name":"tdlib.x86_64-linux","build":25952413,"status":0}]},
-				{"evaluation":2213239,"jobs":[{"name":"tdlib.x86_64-linux","build":25952413,"status":-1}]}
-			]`))
-
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	defer srv.Close()
-
-	client := cuirass.NewClient(srv.URL, cuirass.WithRetry(2, 5*time.Millisecond))
-	st, err := store.Open(":memory:", srv.URL, []string{"x86_64-linux"})
-	if err != nil {
-		t.Fatalf("store.Open: %v", err)
-	}
-
-	p := New(client, st, Config{
-		Systems:      []string{"x86_64-linux"},
-		Limit:        10,
-		PollInterval: time.Minute,
-	})
-
-	ctx := context.Background()
-	if err := p.SyncOnce(ctx); err != nil {
-		t.Fatalf("SyncOnce failed: %v", err)
-	}
-
-	snap := st.Snapshot()
-	data := snap.ByEvalSystem[store.EvalSystemKey{EvalID: 2213239, System: "x86_64-linux"}]
-	if data == nil {
-		t.Fatalf("expected evaluation 2213239 in snapshot")
-	}
-	if data.PendingJobs != 0 || !data.Complete {
-		t.Fatalf("expected evaluation 2213239 to be reconciled to 0 pending and Complete=true, got pending=%d complete=%v", data.PendingJobs, data.Complete)
-	}
-	if data.SucceededJobs != 2 {
-		t.Fatalf("expected 2 succeeded jobs after reconciliation, got %d", data.SucceededJobs)
-	}
-
-	// Subsequent SyncOnce should skip evaluation 2213239 because it is now marked Complete.
-	if err := p.SyncOnce(ctx); err != nil {
-		t.Fatalf("second SyncOnce failed: %v", err)
-	}
-	if eval2213239Calls.Load() != 1 {
-		t.Fatalf("expected evaluation 2213239 not to be re-polled after reconciliation, got %d calls", eval2213239Calls.Load())
 	}
 }
