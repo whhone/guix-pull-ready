@@ -4,3 +4,8 @@
 # Local database files
 *.db
 *.db.tmp
+
+# Environment variables and secrets
+.env
+.env.local
+

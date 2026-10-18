@@ -1,0 +1,25 @@
+services:
+  guix-sync:
+    build:
+      context: .
+      dockerfile: Containerfile
+    restart: unless-stopped
+    volumes:
+      - guix-sync-data:/data
+    command:
+      - "--listen=:8080"
+      - "--db-path=/data/guix-sync.db"
+      - "--systems=x86_64-linux,aarch64-linux"
+      - "--poll-interval=10m"
+
+  tunnel:
+    image: docker.io/cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN}
+    depends_on:
+      - guix-sync
+
+volumes:
+  guix-sync-data:
