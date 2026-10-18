@@ -979,7 +979,7 @@ func renderFooter(st dashboardState) string {
       Substitutes tracked from <a href="%s" target="_blank" rel="noopener"><code>%s</code></a> &middot; Last sync: %s
     </div>
     <div class="site-footer-element-right">
-      <a href="https://codeberg.org/guix/guix" target="_blank" rel="noopener">GNU Guix Source</a>
+      <a href="https://github.com/whhone/guix-pull-ready" target="_blank" rel="noopener">Source Code</a>
     </div>
   </footer>
 `, escServerURL, escServerURL, lastSyncHTML)
