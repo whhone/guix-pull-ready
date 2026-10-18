@@ -60,7 +60,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/v1/channels.scm", s.handleChannelsSCM)
 	s.mux.HandleFunc("/channels.scm", s.handleChannelsSCM)
 	s.mux.HandleFunc("/v1/status", s.handleStatus)
-	s.mux.HandleFunc("/status", s.handleStatus)
+	s.mux.HandleFunc("/status", s.handleStatusPageOrAPI)
 	s.mux.HandleFunc("/v1/evaluations", s.handleEvaluations)
 }
 
@@ -128,6 +128,36 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) handleStatusPageOrAPI(w http.ResponseWriter, r *http.Request) {
+	accept := r.Header.Get("Accept")
+	ua := strings.ToLower(r.Header.Get("User-Agent"))
+	hasPkgParam := false
+	for _, key := range []string{"pkgs", "packages", "spec", "specs"} {
+		if r.URL.Query().Get(key) != "" {
+			hasPkgParam = true
+			break
+		}
+	}
+	isBrowserHTML := r.Method == http.MethodGet &&
+		strings.Contains(accept, "text/html") &&
+		!strings.Contains(accept, "application/json") &&
+		!hasPkgParam &&
+		!strings.HasPrefix(ua, "curl/") &&
+		!strings.HasPrefix(ua, "wget/")
+
+	if isBrowserHTML {
+		snap := s.store.Snapshot()
+		baseURL := detectBaseURL(r)
+		requestedSys := r.URL.Query().Get("system")
+		st := buildDashboardState(baseURL, snap, s.poller, requestedSys)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.WriteString(w, renderHTMLStatusPage(st))
+		return
+	}
+
+	s.handleStatus(w, r)
 }
 
 type evaluationSummaryItem struct {

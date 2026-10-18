@@ -125,7 +125,7 @@ func TestStatusJSONAndHealthz(t *testing.T) {
 func TestDashboardHTMLAndPlainIndex(t *testing.T) {
 	srv := setupTestServer(t)
 
-	// 1. Browser request (HTML Dashboard)
+	// 1. Browser request (HTML Overview page)
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Accept", "text/html")
 	rec := httptest.NewRecorder()
@@ -136,19 +136,34 @@ func TestDashboardHTMLAndPlainIndex(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, want := range []string{
-		"guix-sync-commit Dashboard",
+		"guix-sync-commit",
 		"Latest Commit with All Prebuilts Ready on Substitutes",
-		"Latest Master Evaluation",
-		"Date (Local)",
-		`class="local-time" data-utc="`,
-		"#700",
-		"#699",
-		"libreoffice",
-		"Interactive Commit &amp; Package Resolver",
+		"Usages",
+		`<a href="/status">Status</a>`,
+		`<pre class="mono">guix pull --commit=ffff6666eeee7777dddd8888cccc9999bbbb0000</pre>`,
 		`data-copy="guix pull --commit=ffff6666eeee7777dddd8888cccc9999bbbb0000" onclick="copyFromBtn(this)"`,
+		`data-copy="ffff6666eeee7777dddd8888cccc9999bbbb0000" onclick="copyFromBtn(this)">Copy Commit</button>`,
 	} {
 		if !strings.Contains(body, want) {
-			t.Fatalf("HTML dashboard missing %q", want)
+			t.Fatalf("HTML overview missing %q", want)
+		}
+	}
+
+	// Must NOT contain detailed status/resolver/evaluations table, poll badges, or arch switcher on the overview page
+	for _, unwanted := range []string{
+		"Interactive Commit &amp; Package Resolver",
+		"Recent Master Evaluations",
+		"Latest Master Evaluation",
+		"Evaluations:",
+		"Poller Idle",
+		"Syncing Cuirass",
+		"arch-bar",
+		"aarch64-linux",
+		`/healthz" class="btn mono"`,
+		`/v1/evaluations?system=`,
+	} {
+		if strings.Contains(body, unwanted) {
+			t.Fatalf("HTML overview should not contain %q", unwanted)
 		}
 	}
 
@@ -164,6 +179,87 @@ func TestDashboardHTMLAndPlainIndex(t *testing.T) {
 	plain := rec.Body.String()
 	if !strings.Contains(plain, "ffff6666eeee7777dddd8888cccc9999bbbb0000") {
 		t.Fatalf("plain index missing ready commit:\n%s", plain)
+	}
+}
+
+func TestStatusPageHTMLAndContentNegotiation(t *testing.T) {
+	srv := setupTestServer(t)
+
+	// 1. Browser request to /status (Accept: text/html) -> HTML Status page
+	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	htmlBody := rec.Body.String()
+	for _, want := range []string{
+		"guix-sync-commit Status",
+		`class="active">Status</a>`,
+		"Latest Ready Commit",
+		"Latest Master Evaluation",
+		"Interactive Commit &amp; Package Resolver",
+		"Recent Master Evaluations",
+		"Date (Local)",
+		`class="local-time" data-utc="`,
+		"#700",
+		"#699",
+		"libreoffice",
+	} {
+		if !strings.Contains(htmlBody, want) {
+			t.Fatalf("HTML status page missing %q", want)
+		}
+	}
+
+	// Clean header check: no raw /healthz, /v1/evaluations, "Evaluations:", "Poller Idle", or arch switcher
+	for _, unwanted := range []string{
+		"Evaluations:",
+		"Poller Idle",
+		"Syncing Cuirass",
+		"arch-bar",
+		"aarch64-linux",
+		`/healthz" class="btn mono"`,
+		`/v1/evaluations?system=`,
+	} {
+		if strings.Contains(htmlBody, unwanted) {
+			t.Fatalf("HTML status page should not contain %q", unwanted)
+		}
+	}
+
+	// 2. curl request to /status -> JSON API response
+	req = httptest.NewRequest(http.MethodGet, "/status", nil)
+	req.Header.Set("User-Agent", "curl/8.5.0")
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("curl /status status = %d, want 200", rec.Code)
+	}
+	var res resolver.Result
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if res.EvaluationID != 699 {
+		t.Fatalf("got eval %d, want 699", res.EvaluationID)
+	}
+
+	// 3. Package query to /status?pkgs=emacs,git -> JSON API response
+	req = httptest.NewRequest(http.MethodGet, "/status?pkgs=emacs,git", nil)
+	req.Header.Set("Accept", "text/html") // Even with text/html, package query should return JSON
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /status?pkgs=... status = %d, want 200", rec.Code)
+	}
+	var pkgRes resolver.Result
+	if err := json.Unmarshal(rec.Body.Bytes(), &pkgRes); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if pkgRes.EvaluationID != 700 {
+		t.Fatalf("got eval %d, want 700", pkgRes.EvaluationID)
 	}
 }
 

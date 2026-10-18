@@ -34,9 +34,10 @@ type dashboardState struct {
 
 func buildDashboardState(baseURL string, snap *store.Snapshot, p *poller.Poller, requestedSystem string) dashboardState {
 	st := dashboardState{
-		BaseURL:   baseURL,
-		ServerURL: "https://ci.guix.gnu.org",
-		BySystem:  make(map[string]systemOverview),
+		BaseURL:      baseURL,
+		ServerURL:    "https://ci.guix.gnu.org",
+		ActiveSystem: "x86_64-linux",
+		BySystem:     make(map[string]systemOverview),
 	}
 
 	if p != nil {
@@ -48,7 +49,6 @@ func buildDashboardState(baseURL string, snap *store.Snapshot, p *poller.Poller,
 	}
 
 	if snap == nil {
-		st.ActiveSystem = "x86_64-linux"
 		return st
 	}
 
@@ -57,17 +57,10 @@ func buildDashboardState(baseURL string, snap *store.Snapshot, p *poller.Poller,
 	st.LastSyncedAt = snap.LastSyncedAt
 	st.TotalEvals = len(snap.Evaluations)
 
-	activeSys := strings.TrimSpace(requestedSystem)
-	if activeSys == "" {
-		activeSys = defaultSystem(snap)
-	}
-	st.ActiveSystem = activeSys
-
 	for _, sys := range snap.Systems {
-		ov := buildSystemOverview(snap, sys, 40)
-		st.BySystem[sys] = ov
+		st.BySystem[sys] = buildSystemOverview(snap, sys, 40)
 	}
-	if _, exists := st.BySystem[activeSys]; !exists && len(snap.Systems) > 0 {
+	if _, ok := st.BySystem["x86_64-linux"]; !ok && len(snap.Systems) > 0 {
 		st.ActiveSystem = snap.Systems[0]
 	}
 
@@ -189,37 +182,75 @@ func renderPlainIndex(st dashboardState) string {
 
 	fmt.Fprintf(&b, "Usage Examples:\n")
 	fmt.Fprintf(&b, "  # 1. Pull latest ready commit for x86_64-linux:\n")
-	fmt.Fprintf(&b, "  guix pull --commit=$(curl -fsSL \"%s/v1/commit?system=x86_64-linux\")\n\n", st.BaseURL)
+	fmt.Fprintf(&b, "  guix pull --commit=$(curl -fsSL \"%s/v1/commit\")\n\n", st.BaseURL)
 	fmt.Fprintf(&b, "  # 2. Generate ~/.config/guix/channels.scm:\n")
-	fmt.Fprintf(&b, "  curl -fsSL \"%s/v1/channels.scm?system=x86_64-linux\" > ~/.config/guix/channels.scm\n\n", st.BaseURL)
+	fmt.Fprintf(&b, "  curl -fsSL \"%s/v1/channels.scm\" > ~/.config/guix/channels.scm\n\n", st.BaseURL)
 	fmt.Fprintf(&b, "  # 3. Query specific packages (e.g. emacs, git, gcc-toolchain@14):\n")
 	fmt.Fprintf(&b, "  curl -fsSL \"%s/v1/commit?pkgs=emacs,git,gcc-toolchain@14\"\n\n", st.BaseURL)
 	fmt.Fprintf(&b, "  # 4. Pipe installed packages to find a commit where all your packages are built:\n")
 	fmt.Fprintf(&b, "  guix package --list-installed | cut -f1 | curl -fsSL --data-binary @- \"%s/v1/commit\"\n\n", st.BaseURL)
 	fmt.Fprintf(&b, "  # 5. Inspect detailed JSON status:\n")
-	fmt.Fprintf(&b, "  curl -fsSL \"%s/v1/status?system=x86_64-linux\"\n", st.BaseURL)
+	fmt.Fprintf(&b, "  curl -fsSL \"%s/v1/status\"\n", st.BaseURL)
 	return b.String()
 }
 
 func renderHTMLDashboard(st dashboardState) string {
 	var b strings.Builder
-	activeSys := st.ActiveSystem
-	ov := st.BySystem[activeSys]
+	ov := st.BySystem[st.ActiveSystem]
 	escBaseURL := html.EscapeString(st.BaseURL)
 	escServerURL := html.EscapeString(st.ServerURL)
 
-	stateJSON, _ := json.Marshal(st)
+	b.WriteString(renderPageHead("guix-sync-commit"))
+	b.WriteString(renderPageHeader("main"))
 
-	b.WriteString(`<!DOCTYPE html>
+	b.WriteString(`<main>`)
+	b.WriteString(renderReadyCommitBlock(ov, escServerURL))
+	b.WriteString(renderCLIExamplesBlock(ov, escBaseURL))
+	b.WriteString(`</main>`)
+
+	b.WriteString(renderFooter(st))
+	b.WriteString(renderCommonScripts(st, false))
+	return b.String()
+}
+
+func renderHTMLStatusPage(st dashboardState) string {
+	var b strings.Builder
+	ov := st.BySystem[st.ActiveSystem]
+	escServerURL := html.EscapeString(st.ServerURL)
+
+	defaultMaxPending := 0
+	if ov.StrictReady == nil && ov.BestAvailable != nil {
+		defaultMaxPending = ov.BestAvailable.PendingCount
+	}
+
+	b.WriteString(renderPageHead("guix-sync-commit Status"))
+	b.WriteString(renderPageHeader("status"))
+
+	b.WriteString(`<main>`)
+	b.WriteString(`<div class="cards">`)
+	b.WriteString(renderReadyCommitCardCompact(ov, escServerURL))
+	b.WriteString(renderLatestEvalCard(ov, escServerURL))
+	b.WriteString(`</div>`)
+
+	b.WriteString(renderInteractiveResolverPanel(defaultMaxPending))
+	b.WriteString(renderEvaluationsTable(ov, escServerURL))
+	b.WriteString(`</main>`)
+
+	b.WriteString(renderFooter(st))
+	b.WriteString(renderCommonScripts(st, true))
+	return b.String()
+}
+
+func renderPageHead(title string) string {
+	return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>guix-sync-commit Dashboard</title>
+<title>` + html.EscapeString(title) + `</title>
 <style>
   :root {
-    --bg: #f8fafc;
-    --surface: #ffffff;
+    --bg: #ffffff;
     --border: #e2e8f0;
     --text: #0f172a;
     --muted: #475569;
@@ -238,11 +269,12 @@ func renderHTMLDashboard(st dashboardState) string {
   }
   * { box-sizing: border-box; }
   body {
+    margin: 0 auto;
+    max-width: 1120px;
+    padding: 1.5rem 1rem 3rem;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     background: var(--bg);
     color: var(--text);
-    margin: 0;
-    padding: 0;
     line-height: 1.5;
   }
   code, pre, .mono {
@@ -250,22 +282,64 @@ func renderHTMLDashboard(st dashboardState) string {
   }
   a { color: var(--accent); text-decoration: none; }
   a:hover { text-decoration: underline; }
-  .container { max-width: 1180px; margin: 0 auto; padding: 1.5rem 1rem 3rem; }
 
-  /* Header */
-  .topbar {
+  /* Site Header (Styled like whhone.com) */
+  header.site-header-container {
     display: flex;
-    flex-wrap: wrap;
-    justify-content: space-between;
     align-items: center;
-    gap: 1rem;
-    padding-bottom: 1rem;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    padding-bottom: 0.85rem;
     border-bottom: 1px solid var(--border);
     margin-bottom: 1.5rem;
+    width: 100%;
   }
-  .brand h1 { margin: 0; font-size: 1.5rem; display: flex; align-items: center; gap: 0.6rem; }
-  .brand p { margin: 0.25rem 0 0; color: var(--muted); font-size: 0.92rem; }
-  .status-pills { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem; font-size: 0.85rem; }
+  .site-header-element-left {
+    font-size: 1.25rem;
+    font-weight: 700;
+  }
+  .site-header-element-left a {
+    color: var(--text);
+    text-decoration: none;
+  }
+  .site-header-element-right {
+    text-align: right;
+    font-size: 0.95rem;
+  }
+  .site-header-element-right a {
+    color: var(--muted);
+    text-decoration: none;
+    font-weight: 500;
+    padding: 0.15rem 0.4rem;
+  }
+  .site-header-element-right a:hover {
+    color: var(--accent);
+    text-decoration: underline;
+  }
+  .site-header-element-right a.active {
+    color: var(--text);
+    font-weight: 700;
+    text-decoration: none;
+  }
+  @media (max-width: 500px) {
+    .site-header-element-left,
+    .site-header-element-right {
+      flex-basis: 100%;
+      text-align: left;
+    }
+    .site-header-element-right {
+      margin-top: 0.4rem;
+    }
+  }
+
+  /* Main Container */
+  main {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+    min-width: 0;
+  }
 
   /* Badges */
   .badge {
@@ -283,46 +357,21 @@ func renderHTMLDashboard(st dashboardState) string {
   .badge-err { background: var(--err-bg); color: var(--err-text); }
   .badge-neutral { background: var(--code-bg); color: var(--muted); border: 1px solid var(--border); }
 
-  /* Arch Tabs */
-  .arch-bar {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.75rem;
-    margin-bottom: 1.25rem;
-  }
-  .tabs { display: flex; flex-wrap: wrap; gap: 0.4rem; }
-  .tab {
-    padding: 0.4rem 0.85rem;
-    border-radius: 6px;
-    border: 1px solid var(--border);
-    background: var(--surface);
-    color: var(--text);
-    font-size: 0.88rem;
-    font-weight: 500;
-    cursor: pointer;
-    text-decoration: none;
-  }
-  .tab.active {
-    background: var(--accent);
-    color: #ffffff;
-    border-color: var(--accent);
-  }
-
-  /* Summary Cards */
+  /* Cards & Panels */
   .cards {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
     gap: 1rem;
-    margin-bottom: 1.5rem;
+    width: 100%;
   }
-  .card {
-    background: var(--surface);
+  .card, .panel {
+    background: var(--bg);
     border: 1px solid var(--border);
     border-radius: 8px;
-    padding: 1.1rem 1.25rem;
+    padding: 1.25rem;
     box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+    width: 100%;
+    min-width: 0;
   }
   .card-title {
     font-size: 0.82rem;
@@ -341,13 +390,15 @@ func renderHTMLDashboard(st dashboardState) string {
     margin: 0.25rem 0 0.5rem;
     word-break: break-all;
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 0.5rem;
+    min-width: 0;
   }
-  .card-meta { font-size: 0.85rem; color: var(--muted); margin-bottom: 0.75rem; }
-  .btn-row { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+  .card-meta { font-size: 0.85rem; color: var(--muted); margin-bottom: 0.5rem; }
+  .btn-row { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.5rem; }
   button, .btn {
-    padding: 0.35rem 0.65rem;
+    padding: 0.32rem 0.65rem;
     font-size: 0.8rem;
     border-radius: 5px;
     border: 1px solid var(--border);
@@ -355,6 +406,7 @@ func renderHTMLDashboard(st dashboardState) string {
     color: var(--text);
     cursor: pointer;
     font-weight: 500;
+    white-space: nowrap;
   }
   button:hover, .btn:hover { background: #e2e8f0; }
   button.primary {
@@ -364,14 +416,64 @@ func renderHTMLDashboard(st dashboardState) string {
   }
   button.primary:hover { background: var(--accent-hover); }
 
-  /* Interactive Resolver Panel */
-  .panel {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 1.25rem;
-    margin-bottom: 1.5rem;
+  /* Examples List (Code Block + Copy Button) */
+  .examples-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.85rem;
+    margin-top: 0.75rem;
+    width: 100%;
+    min-width: 0;
   }
+  .examples-title {
+    font-size: 0.82rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+    font-weight: 600;
+    margin: 0;
+  }
+  .example-item {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    width: 100%;
+    min-width: 0;
+  }
+  .example-desc {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--muted);
+  }
+  .code-box-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.4rem 0.6rem;
+    width: 100%;
+    min-width: 0;
+  }
+  .code-box-row pre {
+    margin: 0;
+    flex: 1;
+    min-width: 0;
+    overflow-x: auto;
+    font-size: 0.84rem;
+    background: transparent;
+    padding: 0.2rem 0;
+    border: none;
+    color: var(--text);
+  }
+  .code-box-row button {
+    flex-shrink: 0;
+    padding: 0.3rem 0.7rem;
+    font-size: 0.78rem;
+  }
+
+  /* Interactive Resolver Panel */
   .panel h2 { margin: 0 0 0.35rem; font-size: 1.1rem; }
   .panel p.sub { margin: 0 0 1rem; color: var(--muted); font-size: 0.88rem; }
   .form-grid {
@@ -406,7 +508,7 @@ func renderHTMLDashboard(st dashboardState) string {
   }
 
   /* Evaluations Table */
-  .table-wrap { overflow-x: auto; }
+  .table-wrap { overflow-x: auto; width: 100%; }
   table { border-collapse: collapse; width: 100%; font-size: 0.88rem; }
   th, td { border-bottom: 1px solid var(--border); padding: 0.65rem 0.75rem; text-align: left; vertical-align: middle; }
   th { background: var(--code-bg); color: var(--muted); font-weight: 600; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.03em; }
@@ -438,6 +540,34 @@ func renderHTMLDashboard(st dashboardState) string {
     color: var(--muted);
   }
   .local-time[data-utc]:not([data-formatted]) { visibility: hidden; }
+
+  /* Footer */
+  footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-top: 2.5rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
+    font-size: 0.82rem;
+    color: var(--muted);
+    width: 100%;
+  }
+  .site-footer-element-left {
+    flex: 1;
+  }
+  .site-footer-element-right {
+    text-align: right;
+  }
+  @media (max-width: 500px) {
+    .site-footer-element-left,
+    .site-footer-element-right {
+      flex-basis: 100%;
+      text-align: left;
+    }
+  }
 </style>
 <noscript><style>.local-time[data-utc] { visibility: visible !important; }</style></noscript>
 <script>
@@ -475,111 +605,207 @@ function formatLocalTimes() {
 </script>
 </head>
 <body>
-<div class="container">
-`)
+`
+}
 
-	// 1. Header Bar
-	syncBadge := `<span class="badge badge-ok">Poller Idle</span>`
-	if st.Syncing {
-		syncBadge = `<span class="badge badge-warn">Syncing Cuirass...</span>`
-	} else if st.TotalEvals == 0 {
-		syncBadge = `<span class="badge badge-warn">Warming Up</span>`
-	}
-	if st.LastPollError != "" {
-		syncBadge = fmt.Sprintf(`<span class="badge badge-err" title="%s">Poll Warning</span>`, html.EscapeString(st.LastPollError))
+func renderPageHeader(currentTab string) string {
+	statusClass := ""
+	if currentTab == "status" {
+		statusClass = " class=\"active\""
 	}
 
-	lastSyncHTML := "never"
-	if !st.LastSyncedAt.IsZero() {
-		utcStr := st.LastSyncedAt.UTC().Format("2006-01-02 15:04:05 UTC")
-		isoStr := st.LastSyncedAt.UTC().Format(time.RFC3339)
-		lastSyncHTML = fmt.Sprintf(`<span class="local-time" data-utc="%s" data-show-sec="1" title="%s">%s</span>`,
-			html.EscapeString(isoStr), html.EscapeString(utcStr), html.EscapeString(utcStr))
+	return fmt.Sprintf(`
+  <header class="site-header-container">
+    <strong class="site-header-element-left"><a href="/">guix-sync-commit</a></strong>
+    <nav class="site-header-element-right">
+      <a href="/status"%s>Status</a>
+    </nav>
+  </header>
+`, statusClass)
+}
+
+func renderReadyCommitBlock(ov systemOverview, escServerURL string) string {
+	var b strings.Builder
+	b.WriteString(`<div class="panel">`)
+	if ov.StrictReady != nil {
+		r := ov.StrictReady
+		dateHTML := ""
+		if !r.EvaluationDate.IsZero() {
+			utcStr := r.EvaluationDate.UTC().Format("2006-01-02 15:04:05 UTC")
+			shortUTC := r.EvaluationDate.UTC().Format("2006-01-02 15:04")
+			isoStr := r.EvaluationDate.UTC().Format(time.RFC3339)
+			dateHTML = fmt.Sprintf(` &middot; <span class="local-time" data-utc="%s" title="%s">%s</span>`,
+				html.EscapeString(isoStr), html.EscapeString(utcStr), html.EscapeString(shortUTC))
+		}
+		fmt.Fprintf(&b, `
+    <h2>Latest Commit with All Prebuilts Ready on Substitutes</h2>
+    <div class="card-commit mono">
+      <a href="https://codeberg.org/guix/guix/commit/%s" target="_blank" rel="noopener">%s</a>
+      <button type="button" class="btn" data-copy="%s" onclick="copyFromBtn(this)">Copy Commit</button>
+    </div>
+    <div class="card-meta">Eval <a href="%s/eval/%d" target="_blank" rel="noopener">#%d</a>%s &middot; %d behind master &middot; %d packages built</div>`,
+			html.EscapeString(r.Commit), html.EscapeString(r.Commit),
+			html.EscapeString(r.Commit),
+			escServerURL, r.EvaluationID, r.EvaluationID, dateHTML, r.EvaluationsBehind, r.SucceededCount,
+		)
+	} else if ov.BestAvailable != nil {
+		r := ov.BestAvailable
+		dateHTML := ""
+		if !r.EvaluationDate.IsZero() {
+			utcStr := r.EvaluationDate.UTC().Format("2006-01-02 15:04:05 UTC")
+			shortUTC := r.EvaluationDate.UTC().Format("2006-01-02 15:04")
+			isoStr := r.EvaluationDate.UTC().Format(time.RFC3339)
+			dateHTML = fmt.Sprintf(` &middot; <span class="local-time" data-utc="%s" title="%s">%s</span>`,
+				html.EscapeString(isoStr), html.EscapeString(utcStr), html.EscapeString(shortUTC))
+		}
+		fmt.Fprintf(&b, `
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem;margin-bottom:0.35rem;">
+      <h2 style="margin:0;">Closest to Ready (%d Pending)</h2>
+      <span class="badge badge-warn">No 0-pending in last %d</span>
+    </div>
+    <div class="card-commit mono">
+      <a href="https://codeberg.org/guix/guix/commit/%s" target="_blank" rel="noopener">%s</a>
+      <button type="button" class="btn" data-copy="%s" onclick="copyFromBtn(this)">Copy Commit</button>
+    </div>
+    <div class="card-meta">Eval <a href="%s/eval/%d" target="_blank" rel="noopener">#%d</a>%s &middot; %d behind master &middot; %d packages built</div>`,
+			r.PendingCount, len(ov.Evaluations),
+			html.EscapeString(r.Commit), html.EscapeString(r.Commit),
+			html.EscapeString(r.Commit),
+			escServerURL, r.EvaluationID, r.EvaluationID, dateHTML, r.EvaluationsBehind, r.SucceededCount,
+		)
+	} else {
+		b.WriteString(`
+    <h2>Latest Commit with All Prebuilts Ready on Substitutes</h2>
+    <div class="card-meta">Initial evaluation sync from Cuirass is in progress.</div>`)
+	}
+	b.WriteString(`</div>`)
+	return b.String()
+}
+
+func renderCLIExamplesBlock(ov systemOverview, escBaseURL string) string {
+	var b strings.Builder
+	b.WriteString(`<div class="panel">`)
+	b.WriteString(`<h2>Usages</h2>`)
+	b.WriteString(`<div class="examples-list">`)
+
+	readyCommit := ""
+	if ov.StrictReady != nil {
+		readyCommit = ov.StrictReady.Commit
+	} else if ov.BestAvailable != nil {
+		readyCommit = ov.BestAvailable.Commit
+	}
+
+	if readyCommit != "" {
+		fmt.Fprintf(&b, `
+      <div class="example-item">
+        <div class="example-desc">Update Guix directly to this evaluated commit:</div>
+        <div class="code-box-row">
+          <pre class="mono">guix pull --commit=%s</pre>
+          <button type="button" class="btn" data-copy="guix pull --commit=%s" onclick="copyFromBtn(this)">Copy</button>
+        </div>
+      </div>`,
+			html.EscapeString(readyCommit), html.EscapeString(readyCommit),
+		)
 	}
 
 	fmt.Fprintf(&b, `
-  <div class="topbar">
-    <div class="brand">
-      <h1>guix-sync-commit %s</h1>
-      <p>Find the newest GNU Guix commit with substitutes ready on <a href="%s" target="_blank" rel="noopener"><code>%s</code></a></p>
+      <div class="example-item">
+        <div class="example-desc">Pull the newest ready commit dynamically via API:</div>
+        <div class="code-box-row">
+          <pre class="mono">guix pull --commit=$(curl -fsSL "%s/v1/commit")</pre>
+          <button type="button" class="btn" data-copy="guix pull --commit=$(curl -fsSL &quot;%s/v1/commit&quot;)" onclick="copyFromBtn(this)">Copy</button>
+        </div>
+      </div>
+      <div class="example-item">
+        <div class="example-desc">Generate ~/.config/guix/channels.scm:</div>
+        <div class="code-box-row">
+          <pre class="mono">curl -fsSL "%s/v1/channels.scm" &gt; ~/.config/guix/channels.scm</pre>
+          <button type="button" class="btn" data-copy="curl -fsSL &quot;%s/v1/channels.scm&quot; &gt; ~/.config/guix/channels.scm" onclick="copyFromBtn(this)">Copy</button>
+        </div>
+      </div>
+      <div class="example-item">
+        <div class="example-desc">Query specific packages (resolves immediately when built):</div>
+        <div class="code-box-row">
+          <pre class="mono">curl -fsSL "%s/v1/commit?pkgs=emacs,git,gcc-toolchain@14"</pre>
+          <button type="button" class="btn" data-copy="curl -fsSL &quot;%s/v1/commit?pkgs=emacs,git,gcc-toolchain@14&quot;" onclick="copyFromBtn(this)">Copy</button>
+        </div>
+      </div>
+      <div class="example-item">
+        <div class="example-desc">Pipe installed profile packages to find a ready commit:</div>
+        <div class="code-box-row">
+          <pre class="mono">guix package --list-installed | cut -f1 | curl -fsSL --data-binary @- "%s/v1/commit"</pre>
+          <button type="button" class="btn" data-copy="guix package --list-installed | cut -f1 | curl -fsSL --data-binary @- &quot;%s/v1/commit&quot;" onclick="copyFromBtn(this)">Copy</button>
+        </div>
+      </div>
     </div>
-    <div class="status-pills">
-      <span class="badge badge-neutral">Evaluations: %d</span>
-      <span class="badge badge-neutral">Last Sync: %s</span>
-      <a href="/healthz" class="btn mono">/healthz</a>
-      <a href="/v1/evaluations?system=%s" class="btn mono">/v1/evaluations</a>
-    </div>
-  </div>
-  <script>formatLocalTimes();</script>
-`, syncBadge, escServerURL, escServerURL, st.TotalEvals, lastSyncHTML, html.EscapeString(activeSys))
+  </div>`,
+		escBaseURL, escBaseURL,
+		escBaseURL, escBaseURL,
+		escBaseURL, escBaseURL,
+		escBaseURL, escBaseURL,
+	)
+	return b.String()
+}
 
-	// 2. Architecture Selector Tabs
-	b.WriteString(`  <div class="arch-bar"><div class="tabs">`)
-	for _, sys := range st.Systems {
-		cls := "tab mono"
-		if sys == activeSys {
-			cls = "tab active mono"
-		}
-		fmt.Fprintf(&b, `<a class="%s" href="/?system=%s">%s</a>`,
-			cls, html.EscapeString(sys), html.EscapeString(sys))
-	}
-	b.WriteString(`</div></div>`)
-
-	// 3. Summary Cards for Active System (2-Card Banner)
-	b.WriteString(`  <div class="cards">`)
-
-	// Card A: Latest Commit with All Prebuilts Ready on Substitutes, falling back to Closest to Ready if none has 0 pending
+func renderReadyCommitCardCompact(ov systemOverview, escServerURL string) string {
+	var b strings.Builder
 	b.WriteString(`<div class="card">`)
 	if ov.StrictReady != nil {
 		r := ov.StrictReady
 		short := shortCommit(r.Commit)
-		pullBadge := `<span class="badge badge-warn">guix pull: building</span>`
-		if r.PullReady {
-			pullBadge = `<span class="badge badge-ok">guix pull: ready</span>`
+		dateHTML := ""
+		if !r.EvaluationDate.IsZero() {
+			utcStr := r.EvaluationDate.UTC().Format("2006-01-02 15:04:05 UTC")
+			shortUTC := r.EvaluationDate.UTC().Format("2006-01-02 15:04")
+			isoStr := r.EvaluationDate.UTC().Format(time.RFC3339)
+			dateHTML = fmt.Sprintf(` &middot; <span class="local-time" data-utc="%s" title="%s">%s</span>`,
+				html.EscapeString(isoStr), html.EscapeString(utcStr), html.EscapeString(shortUTC))
 		}
 		fmt.Fprintf(&b, `
-      <div class="card-title"><span>Latest Commit with All Prebuilts Ready on Substitutes</span>%s</div>
+      <div class="card-title"><span>Latest Ready Commit</span></div>
       <div class="card-commit mono">
         <a href="https://codeberg.org/guix/guix/commit/%s" target="_blank" rel="noopener">%s</a>
+        <button type="button" class="btn" data-copy="%s" onclick="copyFromBtn(this)">Copy</button>
       </div>
-      <div class="card-meta">Eval <a href="%s/eval/%d" target="_blank" rel="noopener">#%d</a> &middot; %d behind master &middot; %d succeeded</div>
-      <div class="btn-row">
-        <button type="button" data-copy="%s" onclick="copyFromBtn(this)">Copy Commit</button>
-        <button type="button" data-copy="guix pull --commit=%s" onclick="copyFromBtn(this)">Copy guix pull</button>
-      </div>`,
-			pullBadge,
+      <div class="card-meta">Eval <a href="%s/eval/%d" target="_blank" rel="noopener">#%d</a>%s &middot; %d behind &middot; %d built</div>`,
 			html.EscapeString(r.Commit), html.EscapeString(short),
-			escServerURL, r.EvaluationID, r.EvaluationID, r.EvaluationsBehind, r.SucceededCount,
 			html.EscapeString(r.Commit),
-			html.EscapeString(r.Commit),
+			escServerURL, r.EvaluationID, r.EvaluationID, dateHTML, r.EvaluationsBehind, r.SucceededCount,
 		)
 	} else if ov.BestAvailable != nil {
 		r := ov.BestAvailable
 		short := shortCommit(r.Commit)
+		dateHTML := ""
+		if !r.EvaluationDate.IsZero() {
+			utcStr := r.EvaluationDate.UTC().Format("2006-01-02 15:04:05 UTC")
+			shortUTC := r.EvaluationDate.UTC().Format("2006-01-02 15:04")
+			isoStr := r.EvaluationDate.UTC().Format(time.RFC3339)
+			dateHTML = fmt.Sprintf(` &middot; <span class="local-time" data-utc="%s" title="%s">%s</span>`,
+				html.EscapeString(isoStr), html.EscapeString(utcStr), html.EscapeString(shortUTC))
+		}
 		fmt.Fprintf(&b, `
       <div class="card-title"><span>Closest to Ready (%d Pending)</span><span class="badge badge-warn">No 0-pending in last %d</span></div>
       <div class="card-commit mono">
         <a href="https://codeberg.org/guix/guix/commit/%s" target="_blank" rel="noopener">%s</a>
+        <button type="button" class="btn" data-copy="%s" onclick="copyFromBtn(this)">Copy</button>
       </div>
-      <div class="card-meta">Eval <a href="%s/eval/%d" target="_blank" rel="noopener">#%d</a> &middot; %d behind master &middot; %d succeeded</div>
-      <div class="btn-row">
-        <button type="button" data-copy="%s" onclick="copyFromBtn(this)">Copy Commit</button>
-        <button type="button" data-copy="guix pull --commit=%s" onclick="copyFromBtn(this)">Copy guix pull</button>
-      </div>`,
+      <div class="card-meta">Eval <a href="%s/eval/%d" target="_blank" rel="noopener">#%d</a>%s &middot; %d behind &middot; %d built</div>`,
 			r.PendingCount, len(ov.Evaluations),
 			html.EscapeString(r.Commit), html.EscapeString(short),
-			escServerURL, r.EvaluationID, r.EvaluationID, r.EvaluationsBehind, r.SucceededCount,
 			html.EscapeString(r.Commit),
-			html.EscapeString(r.Commit),
+			escServerURL, r.EvaluationID, r.EvaluationID, dateHTML, r.EvaluationsBehind, r.SucceededCount,
 		)
 	} else {
 		b.WriteString(`
-      <div class="card-title"><span>Latest Commit with All Prebuilts Ready on Substitutes</span><span class="badge badge-warn">Warming up</span></div>
+      <div class="card-title"><span>Latest Ready Commit</span><span class="badge badge-warn">Warming up</span></div>
       <div class="card-meta">Initial evaluation sync from Cuirass is in progress.</div>`)
 	}
 	b.WriteString(`</div>`)
+	return b.String()
+}
 
-	// Card B: Latest Master Evaluation
+func renderLatestEvalCard(ov systemOverview, escServerURL string) string {
+	var b strings.Builder
 	b.WriteString(`<div class="card">`)
 	if ov.LatestEval != nil {
 		le := ov.LatestEval
@@ -592,31 +818,25 @@ function formatLocalTimes() {
       <div class="card-title"><span>Latest Master Evaluation</span><span class="badge badge-neutral">%.1f%% Built</span></div>
       <div class="card-commit mono">
         <a href="https://codeberg.org/guix/guix/commit/%s" target="_blank" rel="noopener">%s</a>
+        <button type="button" class="btn" data-copy="%s" onclick="copyFromBtn(this)">Copy</button>
       </div>
-      <div class="card-meta">Eval <a href="%s/eval/%d" target="_blank" rel="noopener">#%d</a> &middot; %d ok / %d pending / %d failed</div>
-      <div class="btn-row">
-        <button type="button" data-copy="%s" onclick="copyFromBtn(this)">Copy Commit</button>
-        <button type="button" data-copy="guix pull --commit=%s" onclick="copyFromBtn(this)">Copy guix pull</button>
-      </div>`,
+      <div class="card-meta">Eval <a href="%s/eval/%d" target="_blank" rel="noopener">#%d</a> &middot; %d ok / %d pend / %d fail</div>`,
 			pct,
 			html.EscapeString(le.Commit), html.EscapeString(short),
+			html.EscapeString(le.Commit),
 			escServerURL, le.EvaluationID, le.EvaluationID, le.SucceededJobs, le.PendingJobs, le.FailedJobs,
-			html.EscapeString(le.Commit),
-			html.EscapeString(le.Commit),
 		)
 	} else {
 		b.WriteString(`
       <div class="card-title"><span>Latest Master Evaluation</span></div>
       <div class="card-meta">Waiting for evaluation data...</div>`)
 	}
-	b.WriteString(`</div></div>`)
+	b.WriteString(`</div>`)
+	return b.String()
+}
 
-	// 4. Interactive Package & Commit Finder
-	defaultMaxPending := 0
-	if ov.StrictReady == nil && ov.BestAvailable != nil {
-		defaultMaxPending = ov.BestAvailable.PendingCount
-	}
-	fmt.Fprintf(&b, `
+func renderInteractiveResolverPanel(defaultMaxPending int) string {
+	return fmt.Sprintf(`
   <div class="panel">
     <h2>Interactive Commit &amp; Package Resolver</h2>
     <p class="sub">Find the newest commit where your specific packages (or the whole evaluation) have substitutes ready.</p>
@@ -642,16 +862,18 @@ function formatLocalTimes() {
     <div id="finder-result"></div>
   </div>
 `, defaultMaxPending)
+}
 
-	// 5. Recent Evaluations Table
+func renderEvaluationsTable(ov systemOverview, escServerURL string) string {
+	var b strings.Builder
 	fmt.Fprintf(&b, `
   <div class="panel">
-    <h2>Recent Master Evaluations (<code>%s</code>)</h2>
+    <h2>Recent Master Evaluations</h2>
     <p class="sub">Showing %d cached evaluations ordered from newest to oldest.</p>
-`, html.EscapeString(activeSys), len(ov.Evaluations))
+`, len(ov.Evaluations))
 
 	if len(ov.Evaluations) == 0 {
-		b.WriteString(`<p>No evaluations cached yet for this architecture. Background sync is running...</p>`)
+		b.WriteString(`<p>No evaluations cached yet. Background sync is running...</p>`)
 	} else {
 		b.WriteString(`
     <div class="table-wrap">
@@ -702,7 +924,7 @@ function formatLocalTimes() {
 			} else if len(item.PendingSample) > 0 {
 				sampleHTML.WriteString(`<div class="pending-tags">`)
 				for _, jobName := range item.PendingSample {
-					trimmed := strings.TrimSuffix(jobName, "."+activeSys)
+					trimmed := strings.TrimSuffix(jobName, ".x86_64-linux")
 					fmt.Fprintf(&sampleHTML, `<span class="pkg-tag mono" title="%s">%s</span>`,
 						html.EscapeString(jobName), html.EscapeString(trimmed))
 				}
@@ -753,41 +975,41 @@ function formatLocalTimes() {
 		b.WriteString(`
         </tbody>
       </table>
-    </div>
-    <script>formatLocalTimes();</script>`)
+    </div>`)
 	}
 	b.WriteString(`</div>`)
+	return b.String()
+}
 
-	// 6. CLI Cheat Sheet Panel
+func renderFooter(st dashboardState) string {
+	escServerURL := html.EscapeString(st.ServerURL)
+	lastSyncHTML := "never"
+	if !st.LastSyncedAt.IsZero() {
+		utcStr := st.LastSyncedAt.UTC().Format("2006-01-02 15:04:05 UTC")
+		isoStr := st.LastSyncedAt.UTC().Format(time.RFC3339)
+		lastSyncHTML = fmt.Sprintf(`<span class="local-time" data-utc="%s" data-show-sec="1" title="%s">%s</span>`,
+			html.EscapeString(isoStr), html.EscapeString(utcStr), html.EscapeString(utcStr))
+	}
+
+	return fmt.Sprintf(`
+  <footer>
+    <div class="site-footer-element-left">
+      Substitutes tracked from <a href="%s" target="_blank" rel="noopener"><code>%s</code></a> &middot; Last sync: %s
+    </div>
+    <div class="site-footer-element-right">
+      <a href="https://codeberg.org/guix/guix" target="_blank" rel="noopener">GNU Guix Source</a>
+    </div>
+  </footer>
+`, escServerURL, escServerURL, lastSyncHTML)
+}
+
+func renderCommonScripts(st dashboardState, includeFinder bool) string {
+	var b strings.Builder
+	stateJSON, _ := json.Marshal(st)
+
 	fmt.Fprintf(&b, `
-  <div class="panel">
-    <h2>CLI &amp; Automation Examples</h2>
-    <pre class="code-box"># 1. Pull the latest ready commit (with max_pending=%d)
-guix pull --commit=$(curl -fsSL "%s/v1/commit?system=%s&amp;max_pending=%d")
-
-# 2. Generate ~/.config/guix/channels.scm
-curl -fsSL "%s/v1/channels.scm?system=%s&amp;max_pending=%d" &gt; ~/.config/guix/channels.scm
-
-# 3. Query specific packages (resolves immediately when those packages are built)
-curl -fsSL "%s/v1/commit?system=%s&amp;pkgs=emacs,git,gcc-toolchain@14"
-
-# 4. POST all installed packages to find a commit where your profile is ready
-guix package --list-installed | cut -f1 | curl -fsSL --data-binary @- "%s/v1/commit?system=%s"</pre>
-  </div>
-`,
-		defaultMaxPending,
-		escBaseURL, html.EscapeString(activeSys), defaultMaxPending,
-		escBaseURL, html.EscapeString(activeSys), defaultMaxPending,
-		escBaseURL, html.EscapeString(activeSys),
-		escBaseURL, html.EscapeString(activeSys),
-	)
-
-	// Embedded Script for Copy, Local Timezone Formatting & Interactive Resolver
-	fmt.Fprintf(&b, `
-</div>
 <script>
 const DASHBOARD_STATE = %s;
-const ACTIVE_SYSTEM = %q;
 formatLocalTimes();
 
 function copyFromBtn(btn) {
@@ -828,6 +1050,18 @@ function fallbackCopy(text, onDone) {
   }
 }
 
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+`, string(stateJSON))
+
+	if includeFinder {
+		b.WriteString(`
 async function runFinder(ev) {
   ev.preventDefault();
   const out = document.getElementById("finder-result");
@@ -840,7 +1074,7 @@ async function runFinder(ev) {
   const allowFailed = document.getElementById("f-allow-failed").checked;
 
   const params = new URLSearchParams();
-  params.set("system", ACTIVE_SYSTEM);
+  params.set("system", "x86_64-linux");
   if (pkgs) {
     params.set("pkgs", pkgs);
   } else {
@@ -876,26 +1110,19 @@ async function runFinder(ev) {
           '</div>' +
         '</div>' +
         untrackedHtml +
-        '<pre class="code-box" style="background:var(--surface);">' + escapeHtml(scmText) + '</pre>' +
+        '<pre class="code-box" style="background:var(--bg);">' + escapeHtml(scmText) + '</pre>' +
       '</div>';
   } catch (err) {
     out.innerHTML = '<div class="badge badge-err">Request failed: ' + escapeHtml(String(err)) + '</div>';
   }
 }
+`)
+	}
 
-function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-</script>
+	b.WriteString(`</script>
 </body>
 </html>
-`, string(stateJSON), activeSys)
-
+`)
 	return b.String()
 }
 
