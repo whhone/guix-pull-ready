@@ -8,6 +8,14 @@ Public instance: **https://guix-pull-ready.whhone.com**
 
 ![Guix Pull Ready](screenshots/guix-pull-ready-small.png)
 
+## How It Works
+
+1. **Evaluations and Jobs**: When commits are pushed to GNU Guix, the build farm ([Cuirass](https://ci.guix.gnu.org)) creates an **evaluation** with build **jobs** for all packages on each architecture (e.g. `x86_64-linux`).
+2. **Background Sync**: This service polls Cuirass in the background and caches job statuses locally, ensuring instant responses without upstream CI timeouts.
+3. **Ready Commit Lookup**:
+   - **Whole system (default)**: Finds the newest commit whose evaluation has 0 pending builds remaining.
+   - **Package mode (`?pkgs=...`)**: Finds the newest commit where your selected packages are already built, without waiting for the rest of the distribution to finish.
+
 ## Quick Start
 
 ### 1. Update Guix directly to the newest ready commit
