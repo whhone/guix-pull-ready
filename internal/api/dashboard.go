@@ -200,7 +200,7 @@ func renderHTMLDashboard(st dashboardState) string {
 	escBaseURL := html.EscapeString(st.BaseURL)
 	escServerURL := html.EscapeString(st.ServerURL)
 
-	b.WriteString(renderPageHead("guix-sync-commit"))
+	b.WriteString(renderPageHead("Guix Pull with All Prebuilts Ready"))
 	b.WriteString(renderPageHeader("main"))
 
 	b.WriteString(`<main>`)
@@ -223,7 +223,7 @@ func renderHTMLStatusPage(st dashboardState) string {
 		defaultMaxPending = ov.BestAvailable.PendingCount
 	}
 
-	b.WriteString(renderPageHead("guix-sync-commit Status"))
+	b.WriteString(renderPageHead("Guix Pull with All Prebuilts Ready - Status"))
 	b.WriteString(renderPageHeader("status"))
 
 	b.WriteString(`<main>`)
@@ -616,7 +616,7 @@ func renderPageHeader(currentTab string) string {
 
 	return fmt.Sprintf(`
   <header class="site-header-container">
-    <strong class="site-header-element-left"><a href="/">guix-sync-commit</a></strong>
+    <strong class="site-header-element-left"><a href="/">Guix Pull with All Prebuilts Ready</a></strong>
     <nav class="site-header-element-right">
       <a href="/status"%s>Status</a>
     </nav>

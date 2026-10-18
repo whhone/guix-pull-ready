@@ -136,7 +136,7 @@ func TestDashboardHTMLAndPlainIndex(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, want := range []string{
-		"guix-sync-commit",
+		"Guix Pull with All Prebuilts Ready",
 		"Latest Commit with All Prebuilts Ready on Substitutes",
 		"Usages",
 		`<a href="/status">Status</a>`,
@@ -196,7 +196,7 @@ func TestStatusPageHTMLAndContentNegotiation(t *testing.T) {
 	}
 	htmlBody := rec.Body.String()
 	for _, want := range []string{
-		"guix-sync-commit Status",
+		"Guix Pull with All Prebuilts Ready - Status",
 		`class="active">Status</a>`,
 		"Latest Ready Commit",
 		"Latest Master Evaluation",
