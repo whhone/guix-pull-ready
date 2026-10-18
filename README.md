@@ -6,7 +6,7 @@ Find the newest GNU Guix master commit whose prebuilt binaries (substitutes) are
 
 Public instance: **https://guix-pull-ready.whhone.com**
 
-![Guix Pull Ready](screenshots/guix-pull-ready.png)
+![Guix Pull Ready](screenshots/guix-pull-ready-small.png)
 
 ## Quick Start
 
