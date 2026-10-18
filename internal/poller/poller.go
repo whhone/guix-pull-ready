@@ -45,9 +45,6 @@ func New(client *cuirass.Client, st *store.Store, cfg Config) *Poller {
 	if cfg.PollInterval <= 0 {
 		cfg.PollInterval = 10 * time.Minute
 	}
-	if cfg.MaxActiveRefresh <= 0 {
-		cfg.MaxActiveRefresh = 10
-	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
@@ -185,11 +182,11 @@ func (p *Poller) syncEvaluations(ctx context.Context) error {
 		}
 
 		// Select which incomplete evaluations to refresh this cycle.
-		// If there are more incomplete evaluations than MaxActiveRefresh, prioritize
-		// the least-recently refreshed (round-robin) to avoid starving older evaluations,
-		// tie-breaking by fewest pending jobs (closest to completion).
+		// If MaxActiveRefresh > 0 and there are more incomplete evaluations than MaxActiveRefresh,
+		// prioritize the least-recently refreshed (round-robin) to avoid starving older evaluations.
+		// By default (MaxActiveRefresh <= 0), refresh all incomplete evaluations in the tracked window.
 		var toRefreshIncomplete []store.EvaluationRecord
-		if len(incompleteEvals) <= p.cfg.MaxActiveRefresh {
+		if p.cfg.MaxActiveRefresh <= 0 || len(incompleteEvals) <= p.cfg.MaxActiveRefresh {
 			toRefreshIncomplete = incompleteEvals
 		} else {
 			snap := p.store.Snapshot()
