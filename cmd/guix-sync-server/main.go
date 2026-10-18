@@ -27,7 +27,8 @@ func main() {
 		systemsCSV   = flag.String("systems", envOr("GUIX_SYNC_SYSTEMS", "x86_64-linux,aarch64-linux"), "Comma-separated target systems to track")
 		limit        = flag.Int("limit", envIntOr("GUIX_SYNC_LIMIT", 40), "Number of recent master evaluations to track")
 		pollInterval = flag.Duration("poll-interval", envDurationOr("GUIX_SYNC_POLL_INTERVAL", 10*time.Minute), "Background Cuirass polling interval")
-		concurrency  = flag.Int("concurrency", 2, "Maximum concurrent HTTP requests to Cuirass")
+		concurrency      = flag.Int("concurrency", 2, "Maximum concurrent HTTP requests to Cuirass")
+		maxActiveRefresh = flag.Int("max-active-refresh", envIntOr("GUIX_SYNC_MAX_ACTIVE_REFRESH", 10), "Maximum incomplete evaluations to refresh per system per poll cycle")
 	)
 	flag.Parse()
 
@@ -52,10 +53,11 @@ func main() {
 	)
 
 	bgPoller := poller.New(client, st, poller.Config{
-		Systems:      systems,
-		Limit:        *limit,
-		PollInterval: *pollInterval,
-		Logger:       logger,
+		Systems:          systems,
+		Limit:            *limit,
+		PollInterval:     *pollInterval,
+		MaxActiveRefresh: *maxActiveRefresh,
+		Logger:           logger,
 	})
 
 	apiSrv := api.NewServer(st, bgPoller, logger)

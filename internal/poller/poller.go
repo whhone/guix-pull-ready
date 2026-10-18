@@ -3,6 +3,7 @@ package poller
 import (
 	"context"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 
@@ -12,10 +13,11 @@ import (
 
 // Config holds configuration for the background Cuirass poller.
 type Config struct {
-	Systems      []string
-	Limit        int
-	PollInterval time.Duration
-	Logger       *slog.Logger
+	Systems          []string
+	Limit            int
+	PollInterval     time.Duration
+	MaxActiveRefresh int
+	Logger           *slog.Logger
 }
 
 // Poller periodically synchronizes evaluations and job statuses from Cuirass into the local Store.
@@ -24,10 +26,12 @@ type Poller struct {
 	store  *store.Store
 	cfg    Config
 
-	mu          sync.RWMutex
-	lastPollErr error
-	lastPollEnd time.Time
-	syncing     bool
+	mu             sync.RWMutex
+	lastPollErr    error
+	lastPollEnd    time.Time
+	syncing        bool
+	refreshedCycle map[store.EvalSystemKey]uint64
+	cycleCounter   uint64
 }
 
 // New creates a new background Poller.
@@ -41,13 +45,17 @@ func New(client *cuirass.Client, st *store.Store, cfg Config) *Poller {
 	if cfg.PollInterval <= 0 {
 		cfg.PollInterval = 10 * time.Minute
 	}
+	if cfg.MaxActiveRefresh <= 0 {
+		cfg.MaxActiveRefresh = 10
+	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
 	return &Poller{
-		client: client,
-		store:  st,
-		cfg:    cfg,
+		client:         client,
+		store:          st,
+		cfg:            cfg,
+		refreshedCycle: make(map[store.EvalSystemKey]uint64),
 	}
 }
 
@@ -123,6 +131,26 @@ func (p *Poller) syncEvaluations(ctx context.Context) error {
 	}
 	p.store.UpdateEvaluations(records, p.cfg.Limit*2)
 
+	p.mu.Lock()
+	p.cycleCounter++
+	cycle := p.cycleCounter
+	if p.refreshedCycle == nil {
+		p.refreshedCycle = make(map[store.EvalSystemKey]uint64)
+	}
+	// Clean up old entries in refreshedCycle
+	activeKeys := make(map[store.EvalSystemKey]bool, len(records)*len(p.cfg.Systems))
+	for _, ev := range records {
+		for _, sys := range p.cfg.Systems {
+			activeKeys[store.EvalSystemKey{EvalID: ev.ID, System: sys}] = true
+		}
+	}
+	for k := range p.refreshedCycle {
+		if !activeKeys[k] {
+			delete(p.refreshedCycle, k)
+		}
+	}
+	p.mu.Unlock()
+
 	// Fetch recent "guix" jobset evaluations to match commits for guix pull status.
 	guixEvalByCommit := make(map[string]int64)
 	if guixEvals, err := p.client.LatestEvaluations(ctx, "guix", p.cfg.Limit*2); err == nil {
@@ -139,31 +167,68 @@ func (p *Poller) syncEvaluations(ctx context.Context) error {
 		log.Warn("failed to fetch guix jobset evaluations", "err", err)
 	}
 
-	const maxActiveRefreshPerSystem = 3
-	refreshedIncomplete := make(map[string]int, len(p.cfg.Systems))
 	var updatedCount int
 
-	for _, ev := range records {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
+	for _, sys := range p.cfg.Systems {
+		var uncachedEvals []store.EvaluationRecord
+		var incompleteEvals []store.EvaluationRecord
 
-		for _, sys := range p.cfg.Systems {
-			// 1. Skip fetching master evaluation jobs if already complete (0 pending jobs).
+		for _, ev := range records {
 			if p.store.IsEvalSystemComplete(ev.ID, sys) {
 				continue
 			}
+			if !p.store.HasEvalSystem(ev.ID, sys) {
+				uncachedEvals = append(uncachedEvals, ev)
+			} else {
+				incompleteEvals = append(incompleteEvals, ev)
+			}
+		}
 
-			// If this evaluation is already cached in the store (from an earlier poll cycle)
-			// and still has pending jobs, only re-fetch the newest maxActiveRefreshPerSystem
-			// incomplete evaluations per cycle so old evaluations with stuck Cuirass jobs
-			// do not get re-downloaded every poll interval.
-			alreadyCached := p.store.HasEvalSystem(ev.ID, sys)
-			if alreadyCached && refreshedIncomplete[sys] >= maxActiveRefreshPerSystem {
-				continue
+		// Select which incomplete evaluations to refresh this cycle.
+		// If there are more incomplete evaluations than MaxActiveRefresh, prioritize
+		// the least-recently refreshed (round-robin) to avoid starving older evaluations,
+		// tie-breaking by fewest pending jobs (closest to completion).
+		var toRefreshIncomplete []store.EvaluationRecord
+		if len(incompleteEvals) <= p.cfg.MaxActiveRefresh {
+			toRefreshIncomplete = incompleteEvals
+		} else {
+			snap := p.store.Snapshot()
+			p.mu.RLock()
+			sortedIncomplete := append([]store.EvaluationRecord(nil), incompleteEvals...)
+			sort.Slice(sortedIncomplete, func(i, j int) bool {
+				keyI := store.EvalSystemKey{EvalID: sortedIncomplete[i].ID, System: sys}
+				keyJ := store.EvalSystemKey{EvalID: sortedIncomplete[j].ID, System: sys}
+				cycleI := p.refreshedCycle[keyI]
+				cycleJ := p.refreshedCycle[keyJ]
+				if cycleI != cycleJ {
+					return cycleI < cycleJ // least recently refreshed first
+				}
+				var pendingI, pendingJ int
+				if snap != nil {
+					if dataI, ok := snap.ByEvalSystem[keyI]; ok {
+						pendingI = dataI.PendingJobs
+					}
+					if dataJ, ok := snap.ByEvalSystem[keyJ]; ok {
+						pendingJ = dataJ.PendingJobs
+					}
+				}
+				if pendingI != pendingJ {
+					return pendingI < pendingJ // fewest pending jobs first
+				}
+				return sortedIncomplete[i].ID > sortedIncomplete[j].ID
+			})
+			p.mu.RUnlock()
+			toRefreshIncomplete = sortedIncomplete[:p.cfg.MaxActiveRefresh]
+		}
+
+		evalsToFetch := append(uncachedEvals, toRefreshIncomplete...)
+
+		for _, ev := range evalsToFetch {
+			if ctx.Err() != nil {
+				return ctx.Err()
 			}
 
-			// 2. Update guix pull status if not already known-ready.
+			// Update guix pull status if not already known-ready.
 			if pullEvID, hasPullEval := guixEvalByCommit[ev.Commit]; hasPullEval {
 				cachedPull, ok := p.store.GetPullStatus(ev.Commit, sys)
 				if !ok || !cachedPull.Ready || cachedPull.EvalID != pullEvID {
@@ -181,9 +246,10 @@ func (p *Poller) syncEvaluations(ctx context.Context) error {
 				)
 				continue
 			}
-			if alreadyCached {
-				refreshedIncomplete[sys]++
-			}
+
+			p.mu.Lock()
+			p.refreshedCycle[store.EvalSystemKey{EvalID: ev.ID, System: sys}] = cycle
+			p.mu.Unlock()
 
 			p.store.UpsertSystemEval(ev.ID, ev.Commit, sys, jobs)
 			updatedCount++

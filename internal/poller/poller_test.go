@@ -119,3 +119,111 @@ func TestPollerIncrementalSyncAndBuildCache(t *testing.T) {
 		t.Fatalf("expected 2 build calls, got %d", buildCalls.Load())
 	}
 }
+
+func TestPollerFairRoundRobinRefresh(t *testing.T) {
+	evalCalls := make(map[string]*atomic.Int32)
+	for _, id := range []string{"101", "102", "103", "104"} {
+		evalCalls[id] = &atomic.Int32{}
+	}
+
+	var eval101Finished atomic.Bool
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/evaluations":
+			if r.URL.Query().Get("spec") == "guix" {
+				_, _ = w.Write([]byte(`[]`))
+				return
+			}
+			_, _ = w.Write([]byte(`[
+				{"id":104,"specification":"master","timestamp":1729170040,"checkouts":[{"commit":"commit104","channel":"guix"}]},
+				{"id":103,"specification":"master","timestamp":1729170030,"checkouts":[{"commit":"commit103","channel":"guix"}]},
+				{"id":102,"specification":"master","timestamp":1729170020,"checkouts":[{"commit":"commit102","channel":"guix"}]},
+				{"id":101,"specification":"master","timestamp":1729170010,"checkouts":[{"commit":"commit101","channel":"guix"}]}
+			]`))
+		case "/api/jobs":
+			evalID := r.URL.Query().Get("evaluation")
+			if counter, ok := evalCalls[evalID]; ok {
+				counter.Add(1)
+			}
+			if evalID == "101" && eval101Finished.Load() {
+				// Evaluation 101 completed!
+				_, _ = w.Write([]byte(`[{"build":1001,"status":0,"name":"hello.x86_64-linux"}]`))
+				return
+			}
+			// Otherwise, return 1 pending job
+			_, _ = w.Write([]byte(`[{"build":1000,"status":-1,"name":"hello.x86_64-linux"}]`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	client := cuirass.NewClient(srv.URL, cuirass.WithRetry(2, 5*time.Millisecond))
+	st, err := store.Open(":memory:", srv.URL, []string{"x86_64-linux"})
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+
+	p := New(client, st, Config{
+		Systems:          []string{"x86_64-linux"},
+		Limit:            10,
+		PollInterval:     time.Minute,
+		MaxActiveRefresh: 2,
+	})
+
+	ctx := context.Background()
+
+	// Pass 1: all 4 are uncached, so all 4 should be fetched.
+	if err := p.SyncOnce(ctx); err != nil {
+		t.Fatalf("pass 1 failed: %v", err)
+	}
+	for id, counter := range evalCalls {
+		if counter.Load() != 1 {
+			t.Fatalf("expected 1 call for eval %s on pass 1, got %d", id, counter.Load())
+		}
+	}
+
+	// Pass 2: all 4 are cached and incomplete. MaxActiveRefresh = 2 refreshes 2 evaluations (104 and 103).
+	if err := p.SyncOnce(ctx); err != nil {
+		t.Fatalf("pass 2 failed: %v", err)
+	}
+	// Check that exactly 2 evaluations were refreshed on pass 2
+	pass2Refreshed := 0
+	for _, counter := range evalCalls {
+		if counter.Load() == 2 {
+			pass2Refreshed++
+		}
+	}
+	if pass2Refreshed != 2 {
+		t.Fatalf("expected exactly 2 evaluations refreshed on pass 2, got %d", pass2Refreshed)
+	}
+
+	// Pass 3: round-robin guarantees the remaining 2 evaluations (102 and 101) are refreshed!
+	eval101Finished.Store(true) // 101 finishes builds during this poll
+	if err := p.SyncOnce(ctx); err != nil {
+		t.Fatalf("pass 3 failed: %v", err)
+	}
+	// Now all 4 evaluations must have been refreshed at least twice across the cycles.
+	for id, counter := range evalCalls {
+		if counter.Load() < 2 {
+			t.Fatalf("eval %s was starved! Total calls: %d", id, counter.Load())
+		}
+	}
+
+	// Eval 101 should now be marked complete in the store!
+	if !st.IsEvalSystemComplete(101, "x86_64-linux") {
+		t.Fatalf("expected eval 101 to be complete in store")
+	}
+
+	// Pass 4: eval 101 is complete, so it must NOT be refreshed again!
+	eval101Before := evalCalls["101"].Load()
+	if err := p.SyncOnce(ctx); err != nil {
+		t.Fatalf("pass 4 failed: %v", err)
+	}
+	if evalCalls["101"].Load() != eval101Before {
+		t.Fatalf("completed eval 101 was re-polled! expected %d, got %d", eval101Before, evalCalls["101"].Load())
+	}
+}
+

@@ -1,5 +1,5 @@
 # Binaries
-guix-sync-server
+/guix-sync-server
 
 # Local database files
 *.db
