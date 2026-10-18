@@ -1,10 +1,8 @@
 ;;; guix-sync-commit.scm -- Find the latest Guix commit with ready substitutes
-;;; Run with: guix repl -- scripts/guix-sync-commit.scm [OPTIONS] [SPEC...]
+;;; Run with: guix repl -- guix-sync-commit.scm [OPTIONS] [SPEC...]
 
 (use-modules (guix ci)
              (guix utils)
-             (guix packages)
-             (gnu packages)
              (srfi srfi-1)
              (srfi srfi-9)
              (srfi srfi-11)
@@ -24,7 +22,6 @@ Find the newest Guix commit whose substitutes are ready on ci.guix.gnu.org.
 Modes:
   (no SPEC)             whole-evaluation mode: checks if all builds for SYSTEM are finished
   SPEC...               package mode: e.g. emacs git gcc-toolchain@14 bind:utils
-  -c, --from-config     add package specs derived from system.scm and home.scm
 
 Options:
   -s, --system=SYSTEM   target system (default: %current-system)
@@ -37,10 +34,8 @@ Options:
   -h, --help            display this help and exit
 
 Examples:
-  guix-sync-commit emacs git
-  guix-sync-commit --from-config
-  guix-sync-commit --from-config nginx unbound
-  guix-sync-commit --max-pending=0
+  guix repl -- guix-sync-commit.scm --max-pending=0
+  guix repl -- guix-sync-commit.scm emacs git gcc-toolchain@14
 ")
   (exit 0))
 
@@ -52,7 +47,6 @@ Examples:
   (let loop ((args args)
              (opts `((limit . ,%default-limit)
                      (system . #f)
-                     (from-config? . #f)
                      (verbose? . #f)
                      (max-pending . 0)
                      (allow-failed? . #f)
@@ -65,8 +59,6 @@ Examples:
        (show-help))
       (((or "-v" "--verbose") . rest)
        (loop rest (alist-set opts 'verbose? #t)))
-      (((or "-c" "--from-config") . rest)
-       (loop rest (alist-set opts 'from-config? #t)))
       (("--allow-failed" . rest)
        (loop rest (alist-set opts 'allow-failed? #t)))
       (("--require-pull" . rest)
@@ -91,45 +83,8 @@ Examples:
            (loop rest (alist-set opts 'operands
                                  (append (assoc-ref opts 'operands) (list opt)))))))))
 
-;; Extract packages from local Guix system and home configurations
-(define (get-config-package-specs)
-  (let* ((repo-dir (canonicalize-path (dirname (dirname (current-filename)))))
-         (modules-dir (string-append repo-dir "/modules"))
-         (sys-file (string-append repo-dir "/system.scm"))
-         (home-file (string-append repo-dir "/home.scm")))
-    (unless (member modules-dir %load-path)
-      (set! %load-path (cons modules-dir %load-path)))
-    (catch #t
-      (lambda ()
-        (primitive-eval
-         '(begin
-            (use-modules (gnu)
-                         (gnu packages)
-                         (guix packages)
-                         (my home))
-            (reset-home-modules!)
-            (let* ((sys (load "/home/whhone/guix/system.scm"))
-                   (home (load "/home/whhone/guix/home.scm"))
-                   (pkgs (append (operating-system-packages sys) %my-home-packages)))
-              (delete-duplicates
-               (map (lambda (p)
-                      (let* ((pkg (if (pair? p) (car p) p))
-                             (name (package-name pkg))
-                             (ver (package-version pkg)))
-                        (catch #t
-                          (lambda ()
-                            (let ((best (find-best-packages-by-name name #f)))
-                              (if (and (pair? best) (string=? (package-version (car best)) ver))
-                                  name
-                                  (let* ((parts (string-split ver #\.))
-                                         (major (if (pair? parts) (car parts) ver)))
-                                    (string-append name "@" major)))))
-                          (lambda _ name))))
-                    pkgs))))))
-      (lambda (key . args)
-        (format (current-error-port) "Warning: could not load config files (~a: ~a)~%" key args)
-        '()))))
-
+;; Parse a package specification like "gcc-toolchain@14:debug" into ("gcc-toolchain" "14").
+;; Any ":output" suffix is stripped first because Cuirass tracks builds at the package level.
 (define (spec->name+ver spec)
   (let* ((no-output (car (string-split spec #\:)))
          (at (string-index no-output #\@)))
@@ -137,6 +92,8 @@ Examples:
         (values (substring no-output 0 at) (substring no-output (+ 1 at)))
         (values no-output #f))))
 
+;; Extract the "<package>-<version>" nixname from a store derivation path
+;; (e.g. "/gnu/store/<hash>-gcc-toolchain-14.2.0.drv" -> "gcc-toolchain-14.2.0").
 (define (extract-nixname drv)
   (if (not drv)
       ""
@@ -149,12 +106,13 @@ Examples:
                   name))
             base))))
 
+;; Strip the "<name>-" prefix from a nixname to yield the version string.
 (define (nixname->version name nixname)
   (if (string-prefix? (string-append name "-") nixname)
       (substring nixname (+ (string-length name) 1))
       nixname))
 
-;; Cache build derivation -> nixname to minimize queries to /build/<id>
+;; Cache build derivation -> nixname to minimize queries to /build/<id>.
 (define %build-cache (make-hash-table))
 
 (define (get-build-nixname server build-id)
@@ -167,7 +125,10 @@ Examples:
         (hash-set! %build-cache build-id nix)
         nix)))
 
-;; Filter and resolve a list of jobs matching a package specification (e.g. gcc-toolchain@14)
+;; Filter and resolve the jobs matching a package specification (e.g. "gcc-toolchain@14").
+;; When multiple versions of a package exist in the same evaluation, /build/<id> is queried
+;; lazily to extract the version from the derivation path and either filter by the requested
+;; version prefix or pick the highest version according to Guix's version>?.
 (define (resolve-jobs-for-spec server spec target-system jobs)
   (let-values (((name req-ver) (spec->name+ver spec)))
     (let* ((target-suffix (string-append "." target-system))
@@ -180,13 +141,14 @@ Examples:
       (cond
        ((null? matched-jobs)
         '())
-       ;; If all matching jobs succeeded, it is ready
-       ((every (lambda (j) (eq? (job-status j) 'succeeded)) matched-jobs)
+       ;; Fast path: if all matching jobs succeeded and no version filter was requested, it is ready.
+       ((and (not req-ver)
+             (every (lambda (j) (eq? (job-status j) 'succeeded)) matched-jobs))
         matched-jobs)
-       ;; Only single job
+       ;; Only a single job exists for this package name.
        ((null? (cdr matched-jobs))
         matched-jobs)
-       ;; Multiple jobs: resolve versions
+       ;; Multiple jobs exist: resolve versions from /build/<id>.
        (else
         (let* ((jobs-with-ver
                 (map (lambda (j)
@@ -201,7 +163,7 @@ Examples:
                 (if (null? filtered)
                     matched-jobs
                     (map cdr filtered)))
-              ;; Pick latest version
+              ;; Pick the job with the latest version.
               (let* ((sorted (sort jobs-with-ver
                                    (lambda (a b)
                                      (catch #t
@@ -224,7 +186,9 @@ Examples:
   (checkouts history-entry-checkouts)
   (jobs history-entry-jobs))
 
-;; Fetch jobs-history in small chunks of job names to avoid Cuirass 504 Gateway Time-out
+;; Fetch /api/jobs/history in small batches of 20 job names at a time to avoid
+;; triggering Cuirass 504 Gateway Time-out errors on large package lists, then
+;; merge the per-evaluation job lists back together preserving evaluation order.
 (define (fetch-chunked-history server job-names limit)
   (let* ((chunk-size 20)
          (chunks (chunk-list job-names chunk-size))
@@ -240,7 +204,6 @@ Examples:
            chunks)))
     (if (null? histories)
         '()
-        ;; Merge multiple history lists into one list of <history> compatible records
         (let ((merged-table (make-hash-table)))
           (for-each
            (lambda (h-list)
@@ -260,7 +223,7 @@ Examples:
                                                      (history-jobs h))))))
               h-list))
            histories)
-          ;; Preserve ordering of evaluations from the first valid chunk
+          ;; Preserve ordering of evaluations from the first valid chunk.
           (map (lambda (h)
                  (let ((eid (history-evaluation h)))
                    (hash-ref merged-table eid)))
@@ -281,20 +244,39 @@ Examples:
       (history-entry-jobs h)
       (history-jobs h)))
 
-;; Main execution routine
+;; Check whether the "guix" jobset evaluation for COMMIT has finished building
+;; all jobs for TARGET-SYSTEM. Returns (values pull-eval-id pull-ready?).
+(define (check-guix-pull-status server commit target-system)
+  (let* ((pull-eval (catch #t
+                      (lambda ()
+                        (let ((pull-evals (evaluations-for-commit server commit 10)))
+                          (find (lambda (e) (string=? (evaluation-spec e) "guix")) pull-evals)))
+                      (lambda _ #f)))
+         (pull-eval-id (and pull-eval (evaluation-id pull-eval)))
+         (pull-ready? (and pull-eval-id
+                           (catch #t
+                             (lambda ()
+                               (let ((jobs (evaluation-jobs server pull-eval-id)))
+                                 (and (pair? jobs)
+                                      (let ((sys-jobs (filter (lambda (j)
+                                                                (string-suffix? (string-append "." target-system) (job-name j)))
+                                                              jobs)))
+                                        (and (pair? sys-jobs)
+                                             (every (lambda (j) (eq? (job-status j) 'succeeded)) sys-jobs))))))
+                             (lambda _ #f)))))
+    (values pull-eval-id pull-ready?)))
+
+;; Main execution routine.
 (define (main args)
   (let* ((opts (parse-args (cdr args)))
          (limit (assoc-ref opts 'limit))
          (target-system (or (assoc-ref opts 'system) (%current-system)))
          (server (assoc-ref opts 'server))
          (verbose? (assoc-ref opts 'verbose?))
-         (from-config? (assoc-ref opts 'from-config?))
          (max-pending (assoc-ref opts 'max-pending))
          (allow-failed? (assoc-ref opts 'allow-failed?))
          (require-pull? (assoc-ref opts 'require-pull?))
-         (cli-specs (assoc-ref opts 'operands))
-         (config-specs (if from-config? (get-config-package-specs) '()))
-         (all-specs (delete-duplicates (append cli-specs config-specs)))
+         (all-specs (delete-duplicates (assoc-ref opts 'operands)))
          (package-mode? (pair? all-specs)))
 
     (format #t "Querying ~a (system: ~a, limit: ~a evaluations)...~%" server target-system limit)
@@ -317,7 +299,7 @@ Examples:
             (format (current-error-port) "No history returned for specified packages.~%")
             (exit 1))
 
-          ;; Identify specs that are not in CI at all
+          ;; Identify specs that are not tracked in CI at all so local/custom packages do not block.
           (let* ((all-returned-jobs (append-map hist-jobs history))
                  (all-returned-names (delete-duplicates (map job-name all-returned-jobs)))
                  (untracked-specs
@@ -351,7 +333,7 @@ Examples:
                                    ((co . _) (checkout-commit co))
                                    (_ "unknown")))
                          (jobs (hist-jobs h))
-                         ;; Evaluate readiness of each tracked spec
+                         ;; Evaluate readiness of each tracked spec.
                          (spec-results
                           (map (lambda (spec)
                                  (let ((matched (resolve-jobs-for-spec server spec target-system jobs)))
@@ -376,7 +358,11 @@ Examples:
                                 pending-count failed-count)))
 
                     (if all-succeeded?
-                        (print-result server eval-id commit idx #f untracked-specs require-pull? target-system)
+                        (let-values (((pull-eval-id pull-ready?)
+                                      (check-guix-pull-status server commit target-system)))
+                          (if (and require-pull? (not pull-ready?))
+                              (loop (cdr entries) (+ idx 1))
+                              (print-result server eval-id commit idx #f untracked-specs pull-eval-id pull-ready?)))
                         (loop (cdr entries) (+ idx 1))))))))
 
         ;; WHOLE-EVALUATION MODE
@@ -449,41 +435,29 @@ Examples:
                                       (string-join (map job-name (take pending-jobs (min 5 pending-count))) ", "))))
 
                           (if (<= pending-count max-pending)
-                              (print-result server eval-id commit idx ev-date '() require-pull? target-system)
+                              (let-values (((pull-eval-id pull-ready?)
+                                            (check-guix-pull-status server commit target-system)))
+                                (if (and require-pull? (not pull-ready?))
+                                    (loop (cdr ev-list) (+ idx 1))
+                                    (print-result server eval-id commit idx ev-date '() pull-eval-id pull-ready?)))
                               (loop (cdr ev-list) (+ idx 1)))))))))))))
 
-(define (print-result server eval-id commit lag-idx ev-date untracked-specs require-pull? target-system)
-  (let* ((date-str (if ev-date
-                       (date->string ev-date "~Y-~m-~d ~H:~M UTC")
-                       (catch #t
-                         (lambda ()
-                           (let ((ev (evaluation server eval-id)))
-                             (date->string (evaluation-start-time ev) "~Y-~m-~d ~H:~M UTC")))
-                         (lambda _ "unknown"))))
-         (pull-eval (catch #t
-                      (lambda ()
-                        (let ((pull-evals (evaluations-for-commit server commit 10)))
-                          (find (lambda (e) (string=? (evaluation-spec e) "guix")) pull-evals)))
-                      (lambda _ #f)))
-         (pull-ready? (and pull-eval
-                           (catch #t
-                             (lambda ()
-                               (let ((jobs (evaluation-jobs server (evaluation-id pull-eval))))
-                                 (and (pair? jobs)
-                                      (let ((sys-jobs (filter (lambda (j)
-                                                                (string-suffix? (string-append "." target-system) (job-name j)))
-                                                              jobs)))
-                                        (and (pair? sys-jobs)
-                                             (every (lambda (j) (eq? (job-status j) 'succeeded)) sys-jobs))))))
-                             (lambda _ #f)))))
+(define (print-result server eval-id commit lag-idx ev-date untracked-specs pull-eval-id pull-ready?)
+  (let ((date-str (if ev-date
+                      (date->string ev-date "~Y-~m-~d ~H:~M UTC")
+                      (catch #t
+                        (lambda ()
+                          (let ((ev (evaluation server eval-id)))
+                            (date->string (evaluation-start-time ev) "~Y-~m-~d ~H:~M UTC")))
+                        (lambda _ "unknown")))))
     (format #t "~%========================================================================~%")
     (format #t "Newest ready commit: ~a~%" commit)
     (format #t "  Date:              ~a~%" date-str)
     (format #t "  Evaluation:        ~a (spec: master, ~a)~%"
             eval-id
             (if (= lag-idx 0) "latest evaluation" (format #f "~a evaluations behind master" lag-idx)))
-    (when pull-eval
-      (format #t "  Guix Jobset Eval:  ~a (jobset: guix)~%" (evaluation-id pull-eval)))
+    (when pull-eval-id
+      (format #t "  Guix Jobset Eval:  ~a (jobset: guix)~%" pull-eval-id))
     (when (pair? untracked-specs)
       (format #t "  Skipped local:     ~a~%" (string-join untracked-specs " ")))
     (if pull-ready?

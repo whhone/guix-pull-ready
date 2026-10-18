@@ -1,3 +1,6 @@
+// Package poller synchronizes evaluation and job states from an upstream
+// Cuirass server in the background and lazily resolves build version strings
+// for multi-version packages.
 package poller
 
 import (
@@ -81,6 +84,7 @@ func (p *Poller) Run(ctx context.Context) {
 }
 
 // SyncOnce performs a single incremental synchronization pass against Cuirass.
+// Concurrent calls while a sync is already in progress return immediately.
 func (p *Poller) SyncOnce(ctx context.Context) error {
 	p.mu.Lock()
 	if p.syncing {
@@ -104,6 +108,16 @@ func (p *Poller) SyncOnce(ctx context.Context) error {
 	return err
 }
 
+// syncEvaluations performs the core incremental poll cycle:
+//  1. Fetches the newest "master" evaluations (which build the full package collection).
+//  2. Fetches recent "guix" jobset evaluations (which build the Guix package/modules
+//     themselves) and correlates them by commit hash to determine whether `guix pull`
+//     has prebuilt substitutes available.
+//  3. For each target system, skips any evaluation already marked Complete (0 pending builds).
+//  4. Fetches all uncached evaluations plus incomplete evaluations (using fair round-robin
+//     ordering if MaxActiveRefresh > 0), publishing an updated in-memory snapshot after
+//     each evaluation so HTTP clients can query partial progress immediately, and writing
+//     the final state to disk once at the end of the cycle.
 func (p *Poller) syncEvaluations(ctx context.Context) error {
 	log := p.cfg.Logger
 	log.Info("polling Cuirass master evaluations",
@@ -131,10 +145,7 @@ func (p *Poller) syncEvaluations(ctx context.Context) error {
 	p.mu.Lock()
 	p.cycleCounter++
 	cycle := p.cycleCounter
-	if p.refreshedCycle == nil {
-		p.refreshedCycle = make(map[store.EvalSystemKey]uint64)
-	}
-	// Clean up old entries in refreshedCycle
+	// Prune cycle tracking entries for evaluations that have aged out of the window.
 	activeKeys := make(map[store.EvalSystemKey]bool, len(records)*len(p.cfg.Systems))
 	for _, ev := range records {
 		for _, sys := range p.cfg.Systems {
@@ -148,7 +159,7 @@ func (p *Poller) syncEvaluations(ctx context.Context) error {
 	}
 	p.mu.Unlock()
 
-	// Fetch recent "guix" jobset evaluations to match commits for guix pull status.
+	// Fetch recent "guix" jobset evaluations to match commits for `guix pull` substitute status.
 	guixEvalByCommit := make(map[string]int64)
 	if guixEvals, err := p.client.LatestEvaluations(ctx, "guix", p.cfg.Limit*2); err == nil {
 		for _, gev := range guixEvals {
@@ -182,9 +193,12 @@ func (p *Poller) syncEvaluations(ctx context.Context) error {
 		}
 
 		// Select which incomplete evaluations to refresh this cycle.
+		// By default (MaxActiveRefresh <= 0), all incomplete evaluations in the window are refreshed.
 		// If MaxActiveRefresh > 0 and there are more incomplete evaluations than MaxActiveRefresh,
-		// prioritize the least-recently refreshed (round-robin) to avoid starving older evaluations.
-		// By default (MaxActiveRefresh <= 0), refresh all incomplete evaluations in the tracked window.
+		// sort by:
+		//  1. Least-recently refreshed cycle (round-robin fairness so older evaluations never starve).
+		//  2. Fewest pending jobs (evaluations closest to completion finish first).
+		//  3. Newest evaluation ID.
 		var toRefreshIncomplete []store.EvaluationRecord
 		if p.cfg.MaxActiveRefresh <= 0 || len(incompleteEvals) <= p.cfg.MaxActiveRefresh {
 			toRefreshIncomplete = incompleteEvals
@@ -268,6 +282,8 @@ func (p *Poller) syncEvaluations(ctx context.Context) error {
 	return nil
 }
 
+// checkGuixPullReady returns true if the "guix" jobset evaluation for a commit
+// has at least one job for system and all jobs for system succeeded.
 func (p *Poller) checkGuixPullReady(ctx context.Context, pullEvalID int64, system string) bool {
 	jobs, err := p.client.EvaluationJobs(ctx, pullEvalID, system)
 	if err != nil || len(jobs) == 0 {
@@ -283,6 +299,19 @@ func (p *Poller) checkGuixPullReady(ctx context.Context, pullEvalID int64, syste
 
 // ResolveMissingVersions lazily fetches /build/<id> for any multi-job packages in the requested
 // spec list that do not yet have cached version strings.
+//
+// Why lazy resolution is needed:
+// Cuirass's /api/jobs endpoint returns job names like "gcc-toolchain.x86_64-linux" without
+// version numbers. When a package has multiple versions in the same evaluation (e.g. GCC 13
+// and GCC 14), the version can only be determined by inspecting the store derivation path
+// returned by /build/<id>.
+//
+// Optimization:
+//   - Single-job packages never need version lookups.
+//   - Multi-job packages where the user did not request a specific "@version" AND all
+//     versions succeeded also skip /build/<id> lookups, because the latest version is
+//     guaranteed to have succeeded too.
+//   - Resolved build ID -> nixname mappings are permanently cached in the Store across restarts.
 func (p *Poller) ResolveMissingVersions(ctx context.Context, system string, specs []string) {
 	if len(specs) == 0 {
 		return

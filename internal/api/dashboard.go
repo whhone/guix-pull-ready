@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"fmt"
 	"html"
 	"strings"
@@ -32,7 +31,9 @@ type dashboardState struct {
 	BySystem      map[string]systemOverview `json:"by_system"`
 }
 
-func buildDashboardState(baseURL string, snap *store.Snapshot, p *poller.Poller, requestedSystem string) dashboardState {
+// buildDashboardState assembles the view state across all tracked architectures
+// for the HTML dashboard, HTML status page, plain-text summary, and JSON overview.
+func buildDashboardState(baseURL string, snap *store.Snapshot, p *poller.Poller) dashboardState {
 	st := dashboardState{
 		BaseURL:      baseURL,
 		ServerURL:    "https://ci.guix.gnu.org",
@@ -67,6 +68,10 @@ func buildDashboardState(baseURL string, snap *store.Snapshot, p *poller.Poller,
 	return st
 }
 
+// buildSystemOverview summarizes up to limit recent evaluations for a target architecture.
+// It computes both StrictReady (the newest evaluation with 0 pending builds) and
+// BestAvailable (the evaluation with the lowest pending build count, used as a fallback
+// when no evaluation in the window has reached 0 pending builds yet).
 func buildSystemOverview(snap *store.Snapshot, sys string, limit int) systemOverview {
 	ov := systemOverview{
 		System:      sys,
@@ -143,6 +148,7 @@ func buildSystemOverview(snap *store.Snapshot, sys string, limit int) systemOver
 	return ov
 }
 
+// renderPlainIndex renders a concise plain-text overview for CLI users (e.g. `curl http://localhost:8080/`).
 func renderPlainIndex(st dashboardState) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "guix-sync-commit service\n")
@@ -190,6 +196,7 @@ func renderPlainIndex(st dashboardState) string {
 	return b.String()
 }
 
+// renderHTMLDashboard renders the main landing page ("/") with the ready commit and CLI usage commands.
 func renderHTMLDashboard(st dashboardState) string {
 	var b strings.Builder
 	ov := st.BySystem[st.ActiveSystem]
@@ -205,10 +212,12 @@ func renderHTMLDashboard(st dashboardState) string {
 	b.WriteString(`</main>`)
 
 	b.WriteString(renderFooter(st))
-	b.WriteString(renderCommonScripts(st, false))
+	b.WriteString(renderCommonScripts(false))
 	return b.String()
 }
 
+// renderHTMLStatusPage renders the detailed "/status" page containing summary cards,
+// the interactive package resolver form, and the recent evaluations table.
 func renderHTMLStatusPage(st dashboardState) string {
 	var b strings.Builder
 	ov := st.BySystem[st.ActiveSystem]
@@ -233,7 +242,7 @@ func renderHTMLStatusPage(st dashboardState) string {
 	b.WriteString(`</main>`)
 
 	b.WriteString(renderFooter(st))
-	b.WriteString(renderCommonScripts(st, true))
+	b.WriteString(renderCommonScripts(true))
 	return b.String()
 }
 
@@ -279,7 +288,7 @@ func renderPageHead(title string) string {
   a { color: var(--accent); text-decoration: none; }
   a:hover { text-decoration: underline; }
 
-  /* Site Header (Styled like whhone.com) */
+  /* Site Header */
   header.site-header-container {
     display: flex;
     align-items: center;
@@ -420,14 +429,6 @@ func renderPageHead(title string) string {
     margin-top: 0.75rem;
     width: 100%;
     min-width: 0;
-  }
-  .examples-title {
-    font-size: 0.82rem;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--muted);
-    font-weight: 600;
-    margin: 0;
   }
   .example-item {
     display: flex;
@@ -903,8 +904,9 @@ func renderEvaluationsTable(ov systemOverview, escServerURL string) string {
 				sampleHTML.WriteString(`<span class="badge badge-ok">All builds finished</span>`)
 			} else if len(item.PendingSample) > 0 {
 				sampleHTML.WriteString(`<div class="pending-tags">`)
+				sysSuffix := "." + item.System
 				for _, jobName := range item.PendingSample {
-					trimmed := strings.TrimSuffix(jobName, ".x86_64-linux")
+					trimmed := strings.TrimSuffix(jobName, sysSuffix)
 					fmt.Fprintf(&sampleHTML, `<span class="pkg-tag mono" title="%s">%s</span>`,
 						html.EscapeString(jobName), html.EscapeString(trimmed))
 				}
@@ -983,13 +985,11 @@ func renderFooter(st dashboardState) string {
 `, escServerURL, escServerURL, lastSyncHTML)
 }
 
-func renderCommonScripts(st dashboardState, includeFinder bool) string {
+func renderCommonScripts(includeFinder bool) string {
 	var b strings.Builder
-	stateJSON, _ := json.Marshal(st)
 
-	fmt.Fprintf(&b, `
+	b.WriteString(`
 <script>
-const DASHBOARD_STATE = %s;
 formatLocalTimes();
 
 function copyFromBtn(btn) {
@@ -1038,7 +1038,7 @@ function escapeHtml(s) {
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
 }
-`, string(stateJSON))
+`)
 
 	if includeFinder {
 		b.WriteString(`

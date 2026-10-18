@@ -21,7 +21,7 @@ func TestStorePersistAndReload(t *testing.T) {
 		{ID: 1001, Commit: "commit1001", Timestamp: ts},
 	}, 40)
 	st.SetPullStatus("commit1001", "x86_64-linux", 2001, true)
-	st.SetBuildNixName(555, "emacs-29.4")
+	st.SetBuildNixNames(map[int64]string{555: "emacs-29.4"})
 	st.UpsertSystemEval(1001, "commit1001", "x86_64-linux", []cuirass.Job{
 		{BuildID: 555, Name: "emacs.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "29.4"},
 	})

@@ -1,3 +1,7 @@
+// Package cuirass provides an HTTP client and domain helpers for querying
+// a GNU Guix Cuirass continuous integration server (such as https://ci.guix.gnu.org).
+// It includes package specification parsing, store derivation nixname extraction,
+// and natural version comparison matching Guix's version>? (GNU strverscmp).
 package cuirass
 
 import (
@@ -38,14 +42,17 @@ const (
 	StatusCanceled         JobStatus = 4
 )
 
+// IsPending reports whether the job has not yet finished building.
 func (s JobStatus) IsPending() bool {
 	return s == StatusScheduled || s == StatusSubmitted || s == StatusStarted
 }
 
+// IsSucceeded reports whether the job finished successfully and its substitute is built.
 func (s JobStatus) IsSucceeded() bool {
 	return s == StatusSucceeded
 }
 
+// IsFailed reports whether the job terminated with any failure or cancellation status.
 func (s JobStatus) IsFailed() bool {
 	return s == StatusFailed || s == StatusFailedDependency || s == StatusFailedOther || s == StatusCanceled
 }
@@ -73,58 +80,24 @@ func (s JobStatus) String() string {
 	}
 }
 
-func (s *JobStatus) UnmarshalJSON(data []byte) error {
-	var code int
-	if err := json.Unmarshal(data, &code); err == nil {
-		*s = JobStatus(code)
-		return nil
-	}
-	var str string
-	if err := json.Unmarshal(data, &str); err != nil {
-		return fmt.Errorf("invalid job status %s: %w", string(data), err)
-	}
-	switch strings.ToLower(strings.TrimSpace(str)) {
-	case "scheduled":
-		*s = StatusScheduled
-	case "submitted":
-		*s = StatusSubmitted
-	case "started":
-		*s = StatusStarted
-	case "succeeded":
-		*s = StatusSucceeded
-	case "failed":
-		*s = StatusFailed
-	case "failed-dependency":
-		*s = StatusFailedDependency
-	case "failed-other":
-		*s = StatusFailedOther
-	case "canceled", "cancelled":
-		*s = StatusCanceled
-	default:
-		return fmt.Errorf("unknown job status string %q", str)
-	}
-	return nil
-}
-
 // Checkout represents a channel Git checkout in a Cuirass evaluation.
 type Checkout struct {
-	Commit    string `json:"commit"`
-	Channel   string `json:"channel"`
-	Directory string `json:"directory"`
+	Commit  string `json:"commit"`
+	Channel string `json:"channel"`
 }
 
 // Evaluation represents a Cuirass evaluation entry from /api/evaluations.
 type Evaluation struct {
-	ID            int64      `json:"id"`
-	Specification string     `json:"specification"`
-	Status        int        `json:"status"`
-	Timestamp     int64      `json:"timestamp"`
-	CheckoutTime  int64      `json:"checkouttime"`
-	EvalTime      int64      `json:"evaltime"`
-	Checkouts     []Checkout `json:"checkouts"`
+	ID           int64      `json:"id"`
+	Timestamp    int64      `json:"timestamp"`
+	CheckoutTime int64      `json:"checkouttime"`
+	EvalTime     int64      `json:"evaltime"`
+	Checkouts    []Checkout `json:"checkouts"`
 }
 
-// PrimaryCommit returns the Guix commit hash for the evaluation.
+// PrimaryCommit returns the Guix Git commit hash for the evaluation.
+// It prefers the checkout explicitly labeled with channel "guix", falling back
+// to the first checkout in the evaluation if channel names are omitted.
 func (e Evaluation) PrimaryCommit() string {
 	for _, co := range e.Checkouts {
 		if co.Channel == "guix" && co.Commit != "" {
@@ -138,6 +111,8 @@ func (e Evaluation) PrimaryCommit() string {
 }
 
 // StartTime returns the evaluation timestamp in UTC.
+// Cuirass populates different timestamp fields depending on evaluation lifecycle state,
+// so we fall back through Timestamp, EvalTime, and CheckoutTime.
 func (e Evaluation) StartTime() time.Time {
 	ts := e.Timestamp
 	if ts <= 0 {
@@ -157,22 +132,21 @@ type Job struct {
 	BuildID int64     `json:"build"`
 	Status  JobStatus `json:"status"`
 	Name    string    `json:"name"`
-	Version string    `json:"version,omitempty"`
+	// Version is populated lazily from /build/<id> for packages that have multiple
+	// versions in the same evaluation (such as gcc-toolchain or linux-libre).
+	Version string `json:"version,omitempty"`
 }
 
-// Build represents build details from /build/<id>.
+// Build represents build details returned by /build/<id>.
 type Build struct {
-	ID         int64     `json:"id"`
-	JobName    string    `json:"job"`
-	NixName    string    `json:"nixname"`
-	Derivation string    `json:"derivation"`
-	Status     JobStatus `json:"buildstatus"`
-	Finished   int       `json:"finished"`
-	System     string    `json:"system"`
+	ID         int64  `json:"id"`
+	NixName    string `json:"nixname"`
+	Derivation string `json:"derivation"`
 }
 
-// ResolvedNixName returns the nixname extracted from the derivation path
-// (matching extract-nixname in guix-sync-commit.scm) or falls back to NixName.
+// ResolvedNixName returns the "<name>-<version>" string extracted from the store
+// derivation path (matching extract-nixname in guix-sync-commit.scm), or falls back
+// to NixName if Derivation is empty.
 func (b Build) ResolvedNixName() string {
 	if b.Derivation != "" {
 		if nix := ExtractNixname(b.Derivation); nix != "" {
@@ -182,14 +156,7 @@ func (b Build) ResolvedNixName() string {
 	return b.NixName
 }
 
-// HistoryEntry represents an evaluation row returned by /api/jobs/history.
-type HistoryEntry struct {
-	Evaluation int64      `json:"evaluation"`
-	Checkouts  []Checkout `json:"checkouts"`
-	Jobs       []Job      `json:"jobs"`
-}
-
-// Client is an HTTP client for querying a Cuirass server.
+// Client is a concurrency-limited, retrying HTTP client for a Cuirass server.
 type Client struct {
 	baseURL    string
 	httpClient *http.Client
@@ -202,14 +169,7 @@ type Client struct {
 // Option configures a Client.
 type Option func(*Client)
 
-func WithHTTPClient(hc *http.Client) Option {
-	return func(c *Client) {
-		if hc != nil {
-			c.httpClient = hc
-		}
-	}
-}
-
+// WithConcurrency sets the maximum number of concurrent outbound requests to Cuirass.
 func WithConcurrency(n int) Option {
 	return func(c *Client) {
 		if n > 0 {
@@ -218,6 +178,7 @@ func WithConcurrency(n int) Option {
 	}
 }
 
+// WithRetry configures the maximum number of attempts and base backoff delay for failed requests.
 func WithRetry(maxRetries int, baseDelay time.Duration) Option {
 	return func(c *Client) {
 		if maxRetries >= 1 {
@@ -251,10 +212,15 @@ func NewClient(baseURL string, opts ...Option) *Client {
 	return c
 }
 
+// BaseURL returns the normalized upstream Cuirass base URL.
 func (c *Client) BaseURL() string {
 	return c.baseURL
 }
 
+// getJSON performs a concurrency-throttled GET request and decodes the JSON response.
+// Because Cuirass frequently returns 504 Gateway Time-out under load, getJSON retries
+// network errors, 5xx server errors, and 429 Too Many Requests with linear backoff
+// (delay * attempt), while failing fast on other 4xx client errors.
 func (c *Client) getJSON(ctx context.Context, endpoint string, query url.Values, dest any) error {
 	select {
 	case c.sem <- struct{}{}:
@@ -294,7 +260,7 @@ func (c *Client) getJSON(ctx context.Context, endpoint string, query url.Values,
 			_, _ = io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
 			lastErr = fmt.Errorf("HTTP %d from %s", resp.StatusCode, endpoint)
-			// Do not retry client errors (except 429 Too Many Requests).
+			// Do not retry permanent client errors (except 429 Too Many Requests).
 			if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests {
 				return lastErr
 			}
@@ -326,18 +292,10 @@ func (c *Client) LatestEvaluations(ctx context.Context, spec string, limit int) 
 	return evals, nil
 }
 
-// Evaluation fetches metadata for a single evaluation ID.
-func (c *Client) Evaluation(ctx context.Context, evalID int64) (*Evaluation, error) {
-	q := url.Values{}
-	q.Set("id", strconv.FormatInt(evalID, 10))
-	var ev Evaluation
-	if err := c.getJSON(ctx, "/api/evaluation", q, &ev); err != nil {
-		return nil, err
-	}
-	return &ev, nil
-}
-
-// EvaluationJobs fetches all jobs for an evaluation, optionally filtered by target system.
+// EvaluationJobs fetches all jobs for an evaluation, filtered by target system.
+// In addition to passing the "system" query parameter to Cuirass, it verifies that
+// each returned job name ends with ".<system>" to guard against cross-build or
+// unfiltered job entries.
 func (c *Client) EvaluationJobs(ctx context.Context, evalID int64, system string) ([]Job, error) {
 	q := url.Values{}
 	q.Set("evaluation", strconv.FormatInt(evalID, 10))
@@ -374,26 +332,10 @@ func (c *Client) Build(ctx context.Context, buildID int64) (*Build, error) {
 	return &b, nil
 }
 
-// JobsHistory fetches job history across recent evaluations for a list of job names.
-func (c *Client) JobsHistory(ctx context.Context, spec string, jobNames []string, limit int) ([]HistoryEntry, error) {
-	if len(jobNames) == 0 {
-		return nil, nil
-	}
-	q := url.Values{}
-	if spec == "" {
-		spec = "master"
-	}
-	q.Set("spec", spec)
-	q.Set("names", strings.Join(jobNames, ","))
-	q.Set("nr", strconv.Itoa(limit))
-	var history []HistoryEntry
-	if err := c.getJSON(ctx, "/api/jobs/history", q, &history); err != nil {
-		return nil, err
-	}
-	return history, nil
-}
-
-// SpecToNameAndVer parses a package spec like "gcc-toolchain@14:debug" into ("gcc-toolchain", "14").
+// SpecToNameAndVer parses a Guix package spec like "gcc-toolchain@14:debug" into
+// its base package name ("gcc-toolchain") and requested version prefix ("14").
+// Any ":output" suffix (such as ":utils" or ":debug") is stripped first because
+// Cuirass tracks builds at the derivation/package level rather than per output.
 // Matches spec->name+ver in guix-sync-commit.scm.
 func SpecToNameAndVer(spec string) (name string, reqVer string) {
 	spec = strings.TrimSpace(spec)
@@ -410,7 +352,8 @@ func SpecToNameAndVer(spec string) (name string, reqVer string) {
 	return noOutput, ""
 }
 
-// ExtractNixname extracts the package-version string from a Guix store derivation path.
+// ExtractNixname extracts the "<package>-<version>" nixname from a Guix store derivation path
+// by stripping the directory, the 32-character store hash prefix, and the ".drv" suffix.
 // Example: "/gnu/store/0123456789abcdef-gcc-toolchain-14.2.0.drv" -> "gcc-toolchain-14.2.0".
 // Matches extract-nixname in guix-sync-commit.scm.
 func ExtractNixname(drv string) string {
@@ -427,6 +370,7 @@ func ExtractNixname(drv string) string {
 }
 
 // NixnameToVersion strips the "<name>-" prefix from a nixname to yield the version string.
+// Example: ("gcc-toolchain", "gcc-toolchain-14.2.0") -> "14.2.0".
 // Matches nixname->version in guix-sync-commit.scm.
 func NixnameToVersion(name, nixname string) string {
 	prefix := name + "-"
@@ -436,14 +380,20 @@ func NixnameToVersion(name, nixname string) string {
 	return nixname
 }
 
-// VersionGreater returns true if v1 is strictly newer than v2 according to
+// VersionGreater reports whether v1 is strictly newer than v2 according to
 // GNU strverscmp / Guix version>? semantics.
 func VersionGreater(v1, v2 string) bool {
 	return CompareVersions(v1, v2) > 0
 }
 
 // CompareVersions compares two version strings using natural numeric chunk comparison
-// compatible with Guix's version-compare (strverscmp).
+// compatible with Guix's version-compare (GNU strverscmp):
+//  1. Non-digit characters are compared byte-by-byte by ASCII value.
+//  2. Contiguous runs of digits are compared as whole numbers (by stripping leading zeros
+//     and comparing digit length first, then lexicographically). For example, "14.2" > "13.3"
+//     and "1.10" > "1.2".
+//  3. If two numeric segments have the exact same numeric value (e.g. "01" vs "1"),
+//     the segment with fewer leading zeros is considered greater in strverscmp.
 func CompareVersions(v1, v2 string) int {
 	if v1 == v2 {
 		return 0
@@ -451,7 +401,7 @@ func CompareVersions(v1, v2 string) int {
 	i, j := 0, 0
 	for i < len(v1) && j < len(v2) {
 		if isDigit(v1[i]) && isDigit(v2[j]) {
-			// Compare numeric segments
+			// Extract contiguous numeric segments.
 			iStart, jStart := i, j
 			for i < len(v1) && isDigit(v1[i]) {
 				i++
@@ -473,7 +423,7 @@ func CompareVersions(v1, v2 string) int {
 				}
 				return -1
 			}
-			// Equal numeric value; if leading zero counts differ, fewer leading zeros wins in strverscmp
+			// Equal numeric value; if leading zero counts differ, fewer leading zeros wins in strverscmp.
 			len1 := i - iStart
 			len2 := j - jStart
 			if len1 != len2 {

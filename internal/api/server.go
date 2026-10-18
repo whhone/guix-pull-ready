@@ -1,3 +1,5 @@
+// Package api implements the HTTP server, REST endpoints, content negotiation,
+// and HTML dashboard for querying ready GNU Guix commits.
 package api
 
 import (
@@ -64,6 +66,8 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/v1/evaluations", s.handleEvaluations)
 }
 
+// handleHealthz reports service readiness and background poller status.
+// It returns 503 Service Unavailable while the initial evaluation sync is still warming up.
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	snap := s.store.Snapshot()
 	var evalCount int
@@ -99,6 +103,7 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleCommit returns the resolved 40-character Git commit hash as plain text.
 func (s *Server) handleCommit(w http.ResponseWriter, r *http.Request) {
 	res, err := s.resolveRequest(r)
 	if err != nil {
@@ -110,6 +115,7 @@ func (s *Server) handleCommit(w http.ResponseWriter, r *http.Request) {
 	_, _ = fmt.Fprintf(w, "%s\n", res.Commit)
 }
 
+// handleChannelsSCM returns a ready-to-use Guix channels.scm snippet with evaluation metadata comments.
 func (s *Server) handleChannelsSCM(w http.ResponseWriter, r *http.Request) {
 	res, err := s.resolveRequest(r)
 	if err != nil {
@@ -121,6 +127,7 @@ func (s *Server) handleChannelsSCM(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.WriteString(w, resolver.FormatChannelsSCM(res))
 }
 
+// handleStatus returns full JSON resolution metadata.
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	res, err := s.resolveRequest(r)
 	if err != nil {
@@ -130,16 +137,15 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, res)
 }
 
+// handleStatusPageOrAPI performs content negotiation on /status:
+//   - Browser GET requests (Accept: text/html without a pkgs query parameter) receive
+//     the interactive HTML Status & Resolver page.
+//   - CLI tools (curl/wget), POST requests, or queries with ?pkgs=... receive the JSON status response.
 func (s *Server) handleStatusPageOrAPI(w http.ResponseWriter, r *http.Request) {
 	accept := r.Header.Get("Accept")
 	ua := strings.ToLower(r.Header.Get("User-Agent"))
-	hasPkgParam := false
-	for _, key := range []string{"pkgs", "packages", "spec", "specs"} {
-		if r.URL.Query().Get(key) != "" {
-			hasPkgParam = true
-			break
-		}
-	}
+	hasPkgParam := r.URL.Query().Get("pkgs") != ""
+
 	isBrowserHTML := r.Method == http.MethodGet &&
 		strings.Contains(accept, "text/html") &&
 		!strings.Contains(accept, "application/json") &&
@@ -150,8 +156,7 @@ func (s *Server) handleStatusPageOrAPI(w http.ResponseWriter, r *http.Request) {
 	if isBrowserHTML {
 		snap := s.store.Snapshot()
 		baseURL := detectBaseURL(r)
-		requestedSys := r.URL.Query().Get("system")
-		st := buildDashboardState(baseURL, snap, s.poller, requestedSys)
+		st := buildDashboardState(baseURL, snap, s.poller)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = io.WriteString(w, renderHTMLStatusPage(st))
 		return
@@ -161,20 +166,21 @@ func (s *Server) handleStatusPageOrAPI(w http.ResponseWriter, r *http.Request) {
 }
 
 type evaluationSummaryItem struct {
-	EvaluationID   int64     `json:"evaluation_id"`
-	Commit         string    `json:"commit"`
-	Timestamp      time.Time `json:"timestamp"`
-	System         string    `json:"system"`
-	TotalJobs      int       `json:"total_jobs"`
-	SucceededJobs  int       `json:"succeeded_jobs"`
-	PendingJobs    int       `json:"pending_jobs"`
-	FailedJobs     int       `json:"failed_jobs"`
-	PendingSample  []string  `json:"pending_sample,omitempty"`
-	PullReady      bool      `json:"pull_ready"`
-	PullEvalID     int64     `json:"pull_evaluation_id,omitempty"`
-	Complete       bool      `json:"complete"`
+	EvaluationID  int64     `json:"evaluation_id"`
+	Commit        string    `json:"commit"`
+	Timestamp     time.Time `json:"timestamp"`
+	System        string    `json:"system"`
+	TotalJobs     int       `json:"total_jobs"`
+	SucceededJobs int       `json:"succeeded_jobs"`
+	PendingJobs   int       `json:"pending_jobs"`
+	FailedJobs    int       `json:"failed_jobs"`
+	PendingSample []string  `json:"pending_sample,omitempty"`
+	PullReady     bool      `json:"pull_ready"`
+	PullEvalID    int64     `json:"pull_evaluation_id,omitempty"`
+	Complete      bool      `json:"complete"`
 }
 
+// handleEvaluations returns the list of cached evaluations and their build counts for a target system.
 func (s *Server) handleEvaluations(w http.ResponseWriter, r *http.Request) {
 	snap := s.store.Snapshot()
 	if snap == nil {
@@ -198,6 +204,10 @@ func (s *Server) handleEvaluations(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleIndex serves the root endpoint ("/") with content negotiation:
+//   - Accept: application/json -> JSON overview across all tracked systems.
+//   - curl / wget / Accept: text/plain -> concise plain-text CLI cheat sheet.
+//   - Browser visits -> HTML overview page with ready commit and copyable commands.
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
@@ -206,8 +216,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 
 	snap := s.store.Snapshot()
 	baseURL := detectBaseURL(r)
-	requestedSys := r.URL.Query().Get("system")
-	st := buildDashboardState(baseURL, snap, s.poller, requestedSys)
+	st := buildDashboardState(baseURL, snap, s.poller)
 
 	accept := r.Header.Get("Accept")
 	ua := strings.ToLower(r.Header.Get("User-Agent"))
@@ -226,6 +235,9 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.WriteString(w, renderHTMLDashboard(st))
 }
 
+// resolveRequest parses query parameters and optional POST body package specs,
+// triggers lazy version resolution if any multi-version packages are queried,
+// and runs the resolver against the latest in-memory Snapshot.
 func (s *Server) resolveRequest(r *http.Request) (*resolver.Result, error) {
 	if r.Method != http.MethodGet && r.Method != http.MethodPost {
 		return nil, fmt.Errorf("method %s not allowed", r.Method)
@@ -250,11 +262,9 @@ func (s *Server) resolveRequest(r *http.Request) (*resolver.Result, error) {
 		RequirePull: parseBoolParam(qParams.Get("require_pull")),
 	}
 
-	for _, key := range []string{"pkgs", "packages", "spec", "specs"} {
-		for _, v := range qParams[key] {
-			if strings.TrimSpace(v) != "" {
-				q.Packages = append(q.Packages, v)
-			}
+	for _, v := range qParams["pkgs"] {
+		if strings.TrimSpace(v) != "" {
+			q.Packages = append(q.Packages, v)
 		}
 	}
 
@@ -274,6 +284,8 @@ func (s *Server) resolveRequest(r *http.Request) (*resolver.Result, error) {
 	return resolver.Resolve(snap, q)
 }
 
+// parsePackagesFromBody reads a plain-text list of package specs (newline, space, or comma
+// separated, such as the output of `guix package --list-installed | cut -f1`) from the request body.
 func parsePackagesFromBody(r *http.Request) ([]string, error) {
 	defer r.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBodyBytes))
@@ -284,28 +296,14 @@ func parsePackagesFromBody(r *http.Request) ([]string, error) {
 	if trimmed == "" {
 		return nil, nil
 	}
-
-	if strings.HasPrefix(trimmed, "{") {
-		var payload struct {
-			Packages []string `json:"packages"`
-			Pkgs     []string `json:"pkgs"`
-		}
-		if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
-			return nil, fmt.Errorf("invalid JSON body: %w", err)
-		}
-		return append(payload.Packages, payload.Pkgs...), nil
-	}
-	if strings.HasPrefix(trimmed, "[") {
-		var list []string
-		if err := json.Unmarshal([]byte(trimmed), &list); err != nil {
-			return nil, fmt.Errorf("invalid JSON array body: %w", err)
-		}
-		return list, nil
-	}
-
 	return []string{trimmed}, nil
 }
 
+// writeResolveError maps resolver domain errors to appropriate HTTP status codes:
+//   - ErrNoEvaluations     -> 503 Service Unavailable (cache still warming up)
+//   - ErrNoTrackedPackages -> 422 Unprocessable Entity (none of the requested packages exist on CI)
+//   - ErrNoReadyEvaluation -> 404 Not Found (no evaluation within the window met criteria)
+//   - Other input errors   -> 400 Bad Request
 func (s *Server) writeResolveError(w http.ResponseWriter, r *http.Request, err error, plain bool) {
 	code := http.StatusNotFound
 	switch {
@@ -335,6 +333,9 @@ func defaultSystem(snap *store.Snapshot) string {
 	return "x86_64-linux"
 }
 
+// detectBaseURL reconstructs the public scheme and host from reverse-proxy headers
+// (such as X-Forwarded-Proto from Cloudflare Tunnel or Caddy) so CLI usage examples
+// rendered in the dashboard match the public URL visited by the user.
 func detectBaseURL(r *http.Request) string {
 	scheme := "http"
 	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {

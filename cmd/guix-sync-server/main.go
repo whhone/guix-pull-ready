@@ -1,3 +1,6 @@
+// Command guix-sync-server runs an HTTP service that polls a GNU Guix Cuirass
+// continuous integration server in the background, caches evaluation and build
+// statuses locally, and serves ready Guix commits over a fast, lock-free HTTP API.
 package main
 
 import (
@@ -21,12 +24,12 @@ import (
 
 func main() {
 	var (
-		listenAddr   = flag.String("listen", envOr("GUIX_SYNC_LISTEN", ":8080"), "HTTP listen address")
-		dbPath       = flag.String("db-path", envOr("GUIX_SYNC_DB_PATH", "./guix-sync.db"), "Path to persistent database file (use :memory: for in-memory only)")
-		cuirassURL   = flag.String("cuirass-url", envOr("GUIX_SYNC_CUIRASS_URL", "https://ci.guix.gnu.org"), "Upstream Cuirass server URL")
-		systemsCSV   = flag.String("systems", envOr("GUIX_SYNC_SYSTEMS", "x86_64-linux,aarch64-linux"), "Comma-separated target systems to track")
-		limit        = flag.Int("limit", envIntOr("GUIX_SYNC_LIMIT", 40), "Number of recent master evaluations to track")
-		pollInterval = flag.Duration("poll-interval", envDurationOr("GUIX_SYNC_POLL_INTERVAL", 10*time.Minute), "Background Cuirass polling interval")
+		listenAddr       = flag.String("listen", envOr("GUIX_SYNC_LISTEN", ":8080"), "HTTP listen address")
+		dbPath           = flag.String("db-path", envOr("GUIX_SYNC_DB_PATH", "./guix-sync.db"), "Path to persistent database file (use :memory: for in-memory only)")
+		cuirassURL       = flag.String("cuirass-url", envOr("GUIX_SYNC_CUIRASS_URL", "https://ci.guix.gnu.org"), "Upstream Cuirass server URL")
+		systemsCSV       = flag.String("systems", envOr("GUIX_SYNC_SYSTEMS", "x86_64-linux,aarch64-linux"), "Comma-separated target systems to track")
+		limit            = flag.Int("limit", envIntOr("GUIX_SYNC_LIMIT", 40), "Number of recent master evaluations to track")
+		pollInterval     = flag.Duration("poll-interval", envDurationOr("GUIX_SYNC_POLL_INTERVAL", 10*time.Minute), "Background Cuirass polling interval")
 		concurrency      = flag.Int("concurrency", 2, "Maximum concurrent HTTP requests to Cuirass")
 		maxActiveRefresh = flag.Int("max-active-refresh", envIntOr("GUIX_SYNC_MAX_ACTIVE_REFRESH", 0), "Maximum incomplete evaluations to refresh per system per poll cycle (0 = refresh all incomplete in window)")
 	)
@@ -102,6 +105,7 @@ func main() {
 	logger.Info("shutdown complete")
 }
 
+// parseSystems splits a comma-separated list of Guix system triples and removes duplicates.
 func parseSystems(csv string) []string {
 	var out []string
 	seen := make(map[string]bool)

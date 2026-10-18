@@ -1,3 +1,11 @@
+// Package resolver implements the commit resolution engine over an in-memory store Snapshot.
+//
+// It supports two resolution modes:
+//   - Whole-Evaluation Mode: scans recent master evaluations from newest to oldest and selects
+//     the newest evaluation whose pending build count is at most MaxPending (default 0).
+//   - Package Mode: filters out packages not tracked by upstream CI (such as custom or local
+//     channel packages), and selects the newest evaluation where every tracked package in the
+//     query has a ready substitute.
 package resolver
 
 import (
@@ -123,6 +131,10 @@ const (
 	specStatusMissing
 )
 
+// resolvePackageMode partitions the requested package specs into tracked (present in at least
+// one cached CI evaluation for the target system) and untracked (custom/local packages not built
+// by upstream Cuirass). Untracked specs are reported in Result.UntrackedPackages and skipped so
+// users piping `guix package --list-installed` are not blocked by third-party channel packages.
 func resolvePackageMode(snap *store.Snapshot, evals []store.EvaluationRecord, q Query, specs []string) (*Result, error) {
 	trackedMap := snap.TrackedBasePackages[q.System]
 	var trackedSpecs []string
@@ -196,6 +208,9 @@ func resolvePackageMode(snap *store.Snapshot, evals []store.EvaluationRecord, q 
 	return nil, ErrNoReadyEvaluation
 }
 
+// evaluateSpecStatus checks a single package spec against an evaluation's job index.
+// It checks the O(1) SingleJobs map first (covering ~99% of packages), falling back
+// to ResolveJobsForSpec on JobsByBase for multi-version packages.
 func evaluateSpecStatus(spec string, targetSystem string, data *store.SystemEvalData, allowFailed bool) specStatus {
 	name, _ := cuirass.SpecToNameAndVer(spec)
 	if name == "" || data == nil {
@@ -245,7 +260,14 @@ func classifySpecJobs(matched []cuirass.Job, allowFailed bool) specStatus {
 }
 
 // ResolveJobsForSpec filters and resolves the jobs matching a package spec (e.g. "gcc-toolchain@14").
-// Matches resolve-jobs-for-spec in guix-sync-commit.scm.
+// Matches resolve-jobs-for-spec in guix-sync-commit.scm:
+//  1. Matches both "<name>.<system>" and "base.<name>.<system>" job names.
+//  2. If no "@version" prefix is requested and all matching jobs succeeded, returns all of them immediately.
+//  3. If only a single job matched, returns it.
+//  4. If multiple jobs matched and "@version" was specified, returns jobs whose Version starts with reqVer
+//     (or all matched jobs if versions have not yet been resolved).
+//  5. If multiple jobs matched and no "@version" was specified, selects the single job with the highest
+//     version according to cuirass.VersionGreater (matching Guix's default behaviour of picking the newest version).
 func ResolveJobsForSpec(spec string, targetSystem string, jobsByBase map[string][]cuirass.Job) []cuirass.Job {
 	name, reqVer := cuirass.SpecToNameAndVer(spec)
 	if name == "" || jobsByBase == nil {
@@ -270,7 +292,7 @@ func ResolveJobsForSpec(spec string, targetSystem string, jobsByBase map[string]
 		return nil
 	}
 
-	// If all matching jobs succeeded and no specific version filter is requested, it is ready.
+	// Fast path: if all matching jobs succeeded and no version filter is requested, it is ready.
 	if reqVer == "" {
 		allSucceeded := true
 		for _, j := range matched {
@@ -356,6 +378,8 @@ func FormatChannelsSCM(r *Result) string {
 	return b.String()
 }
 
+// normalizeSpecs splits comma- or whitespace-separated package spec strings,
+// ignores blank lines and '#' or ';' comment lines, and deduplicates preserving order.
 func normalizeSpecs(raw []string) []string {
 	seen := make(map[string]bool, len(raw))
 	var out []string

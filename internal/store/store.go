@@ -1,3 +1,10 @@
+// Package store manages persistent evaluation state on disk and provides
+// lock-free in-memory snapshots for HTTP request handlers.
+//
+// State is persisted as a gob-encoded file using an atomic write-and-rename
+// pattern (.tmp -> fsync -> rename) so a crash or power loss never corrupts
+// the database file. Readers access an immutable Snapshot via an atomic pointer
+// without contending with the background poller.
 package store
 
 import (
@@ -35,6 +42,14 @@ type PullEvalStatus struct {
 }
 
 // SystemEvalData holds aggregated counts and indexed jobs for an (evaluation, system) pair.
+//
+// Memory layout optimization:
+// A single GNU Guix evaluation contains ~35,000 package jobs per architecture.
+// Storing a []cuirass.Job slice for every package across 40 evaluations would allocate
+// over 1.4 million slice headers and structs. Because ~99% of packages have only a single
+// job per evaluation, SingleJobs stores their status directly as a 1-byte int8 keyed by
+// an interned package name. Only the ~200 packages with multiple versions in the same
+// evaluation (such as gcc-toolchain or linux-libre) are stored in JobsByBase.
 type SystemEvalData struct {
 	EvalID        int64
 	System        string
@@ -46,8 +61,7 @@ type SystemEvalData struct {
 	PullReady     bool
 	PullEvalID    int64
 	Complete      bool
-	// SingleJobs maps single-job base package names directly to their JobStatus (as int8),
-	// avoiding allocating []cuirass.Job slices and structs for 99% of packages.
+	// SingleJobs maps single-job base package names directly to their JobStatus (as int8).
 	SingleJobs map[string]int8
 	// JobsByBase stores full job slices only for packages that have multiple jobs
 	// in the same evaluation (e.g. gcc-toolchain, linux-libre).
@@ -75,7 +89,7 @@ type persistedState struct {
 	BuildNixNames map[int64]string                     // buildID -> nixname
 }
 
-// Store manages persistent state and provides lock-free in-memory snapshots.
+// Store manages persistent state and publishes lock-free in-memory snapshots.
 type Store struct {
 	mu         sync.RWMutex
 	dbPath     string
@@ -111,6 +125,9 @@ func Open(dbPath string, serverURL string, systems []string) (*Store, error) {
 	return s, nil
 }
 
+// internLocked deduplicates repeated package and job names across evaluations
+// so all evaluation maps share a single underlying string allocation per package name.
+// Caller must hold s.mu.Lock().
 func (s *Store) internLocked(str string) string {
 	if existing, ok := s.internPool[str]; ok {
 		return existing
@@ -141,7 +158,8 @@ func (s *Store) loadFromDisk() error {
 		loaded.BuildNixNames = make(map[int64]string)
 	}
 
-	// Intern package and job strings on load.
+	// Re-intern package and job name strings after gob decoding to deduplicate heap strings,
+	// and populate cached versions on multi-version jobs.
 	for _, data := range loaded.SystemData {
 		if len(data.SingleJobs) > 0 {
 			internedSingle := make(map[string]int8, len(data.SingleJobs))
@@ -156,6 +174,9 @@ func (s *Store) loadFromDisk() error {
 				ipkg := s.internLocked(pkg)
 				for i := range jobs {
 					jobs[i].Name = s.internLocked(jobs[i].Name)
+					if nix, ok := loaded.BuildNixNames[jobs[i].BuildID]; ok && nix != "" {
+						jobs[i].Version = cuirass.NixnameToVersion(ipkg, nix)
+					}
 				}
 				multi[ipkg] = jobs
 			}
@@ -168,6 +189,7 @@ func (s *Store) loadFromDisk() error {
 }
 
 // PublishSnapshot updates the in-memory Snapshot without writing to disk.
+// Used during incremental poll cycles so HTTP clients see newly fetched evaluations immediately.
 func (s *Store) PublishSnapshot() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -175,6 +197,8 @@ func (s *Store) PublishSnapshot() {
 }
 
 // Save persists the current state atomically to disk and publishes a fresh Snapshot.
+// It writes to a temporary file (<dbPath>.tmp), flushes buffers, fsyncs the file descriptor,
+// and atomically renames it over dbPath.
 func (s *Store) Save() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -234,15 +258,8 @@ func (s *Store) GetBuildNixName(buildID int64) (string, bool) {
 	return nix, ok
 }
 
-// SetBuildNixName caches a build ID -> nixname mapping and updates all matching jobs.
-func (s *Store) SetBuildNixName(buildID int64, nixName string) {
-	if buildID <= 0 || nixName == "" {
-		return
-	}
-	s.SetBuildNixNames(map[int64]string{buildID: nixName})
-}
-
-// SetBuildNixNames caches multiple build ID -> nixname mappings and updates jobs in SystemData.
+// SetBuildNixNames caches build ID -> nixname mappings and updates the derived Version
+// field on any matching multi-version jobs in SystemData.
 func (s *Store) SetBuildNixNames(nixMap map[int64]string) {
 	if len(nixMap) == 0 {
 		return
@@ -267,7 +284,7 @@ func (s *Store) SetBuildNixNames(nixMap map[int64]string) {
 	}
 }
 
-// HasEvalSystem returns true if the store already has cached job data for (evalID, system).
+// HasEvalSystem reports whether the store has cached job data for (evalID, system).
 func (s *Store) HasEvalSystem(evalID int64, system string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -275,8 +292,8 @@ func (s *Store) HasEvalSystem(evalID int64, system string) bool {
 	return ok && data.TotalJobs > 0
 }
 
-// IsEvalSystemComplete returns true if an (evalID, system) pair is already cached
-// with zero pending builds.
+// IsEvalSystemComplete reports whether an (evalID, system) pair is already cached
+// with zero pending builds (and therefore never needs to be re-polled).
 func (s *Store) IsEvalSystemComplete(evalID int64, system string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -284,7 +301,7 @@ func (s *Store) IsEvalSystemComplete(evalID int64, system string) bool {
 	return ok && data.Complete
 }
 
-// GetPullStatus returns any cached guix jobset pull status for (commit, system).
+// GetPullStatus returns any cached "guix" jobset pull status for (commit, system).
 func (s *Store) GetPullStatus(commit, system string) (PullEvalStatus, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -296,7 +313,7 @@ func (s *Store) GetPullStatus(commit, system string) (PullEvalStatus, bool) {
 	return st, ok
 }
 
-// SetPullStatus records the guix jobset pull status for (commit, system).
+// SetPullStatus records the "guix" jobset pull status for (commit, system).
 func (s *Store) SetPullStatus(commit, system string, evalID int64, ready bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -316,8 +333,8 @@ func (s *Store) SetPullStatus(commit, system string, evalID int64, ready bool) {
 	}
 }
 
-// UpdateEvaluations replaces the ordered list of recent master evaluations and prunes
-// stale evaluation records older than maxRetained.
+// UpdateEvaluations replaces the ordered list of recent master evaluations (sorted newest first)
+// and prunes stale evaluation records beyond maxRetained to bound memory and disk usage.
 func (s *Store) UpdateEvaluations(evals []EvaluationRecord, maxRetained int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -352,6 +369,11 @@ func (s *Store) UpdateEvaluations(evals []EvaluationRecord, maxRetained int) {
 }
 
 // UpsertSystemEval indexes and stores all jobs for a single (evalID, commit, system).
+//
+// Each job is first placed into singleJobs (1 byte per package). If a second job with the
+// same base package name is encountered in the same evaluation, the package is promoted
+// from singleJobs into multiJobs (JobsByBase) so version-specific queries can inspect all
+// candidate builds.
 func (s *Store) UpsertSystemEval(evalID int64, commit string, system string, jobs []cuirass.Job) {
 	suffix := "." + system
 	var succeeded, pending, failed int
@@ -393,7 +415,7 @@ func (s *Store) UpsertSystemEval(evalID int64, commit string, system string, job
 			}
 			multiJobs[ibase] = append(existingList, j)
 		} else if prevStatus, hasSingle := singleJobs[ibase]; hasSingle {
-			// Promote from single-job to multi-job package
+			// Promote from single-job to multi-job package.
 			delete(singleJobs, ibase)
 			first := firstJob[ibase]
 			delete(firstJob, ibase)
@@ -443,7 +465,8 @@ func (s *Store) UpsertSystemEval(evalID int64, commit string, system string, job
 	s.state.LastSyncedAt = time.Now().UTC()
 }
 
-// BasePackageFromJobName extracts the package name from a Cuirass job name.
+// BasePackageFromJobName extracts the base package name from a Cuirass job name
+// by stripping the ".<system>" suffix and optional "base." prefix.
 // For example:
 //
 //	"emacs.x86_64-linux"      -> "emacs"
@@ -458,6 +481,12 @@ func BasePackageFromJobName(jobName, system string) string {
 	return trimmed
 }
 
+// rebuildSnapshotLocked constructs a new immutable Snapshot and stores it atomically.
+// SingleJobs maps are never mutated in place (UpsertSystemEval allocates a fresh map on
+// replacement), so their map references can be shared directly with the Snapshot.
+// JobsByBase slices can have their Version fields updated in place by SetBuildNixNames,
+// so those ~200 multi-version package slices are deep-copied to keep the Snapshot race-free.
+// Caller must hold s.mu.Lock().
 func (s *Store) rebuildSnapshotLocked() {
 	evals := make([]EvaluationRecord, len(s.state.Evaluations))
 	copy(evals, s.state.Evaluations)
@@ -470,19 +499,12 @@ func (s *Store) rebuildSnapshotLocked() {
 
 	for k, v := range s.state.SystemData {
 		copied := *v
-		// SingleJobs is immutable after UpsertSystemEval, so share the map reference directly.
 		copied.SingleJobs = v.SingleJobs
 
-		// Only deep-copy JobsByBase (which holds only the ~200 multi-version packages).
 		copiedJobsByBase := make(map[string][]cuirass.Job, len(v.JobsByBase))
 		for basePkg, jobs := range v.JobsByBase {
 			copiedJobs := make([]cuirass.Job, len(jobs))
 			copy(copiedJobs, jobs)
-			for i := range copiedJobs {
-				if nix, ok := s.state.BuildNixNames[copiedJobs[i].BuildID]; ok && nix != "" {
-					copiedJobs[i].Version = cuirass.NixnameToVersion(basePkg, nix)
-				}
-			}
 			copiedJobsByBase[basePkg] = copiedJobs
 		}
 		copied.JobsByBase = copiedJobsByBase
