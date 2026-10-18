@@ -185,11 +185,7 @@ func renderPlainIndex(st dashboardState) string {
 	fmt.Fprintf(&b, "  guix pull --commit=$(curl -fsSL \"%s/v1/commit\")\n\n", st.BaseURL)
 	fmt.Fprintf(&b, "  # 2. Generate ~/.config/guix/channels.scm:\n")
 	fmt.Fprintf(&b, "  curl -fsSL \"%s/v1/channels.scm\" > ~/.config/guix/channels.scm\n\n", st.BaseURL)
-	fmt.Fprintf(&b, "  # 3. Query specific packages (e.g. emacs, git, gcc-toolchain@14):\n")
-	fmt.Fprintf(&b, "  curl -fsSL \"%s/v1/commit?pkgs=emacs,git,gcc-toolchain@14\"\n\n", st.BaseURL)
-	fmt.Fprintf(&b, "  # 4. Pipe installed packages to find a commit where all your packages are built:\n")
-	fmt.Fprintf(&b, "  guix package --list-installed | cut -f1 | curl -fsSL --data-binary @- \"%s/v1/commit\"\n\n", st.BaseURL)
-	fmt.Fprintf(&b, "  # 5. Inspect detailed JSON status:\n")
+	fmt.Fprintf(&b, "  # 3. Inspect detailed JSON status:\n")
 	fmt.Fprintf(&b, "  curl -fsSL \"%s/v1/status\"\n", st.BaseURL)
 	return b.String()
 }
@@ -723,24 +719,8 @@ func renderCLIExamplesBlock(ov systemOverview, escBaseURL string) string {
           <button type="button" class="btn" data-copy="curl -fsSL &quot;%s/v1/channels.scm&quot; &gt; ~/.config/guix/channels.scm" onclick="copyFromBtn(this)">Copy</button>
         </div>
       </div>
-      <div class="example-item">
-        <div class="example-desc">Query specific packages (resolves immediately when built):</div>
-        <div class="code-box-row">
-          <pre class="mono">curl -fsSL "%s/v1/commit?pkgs=emacs,git,gcc-toolchain@14"</pre>
-          <button type="button" class="btn" data-copy="curl -fsSL &quot;%s/v1/commit?pkgs=emacs,git,gcc-toolchain@14&quot;" onclick="copyFromBtn(this)">Copy</button>
-        </div>
-      </div>
-      <div class="example-item">
-        <div class="example-desc">Pipe installed profile packages to find a ready commit:</div>
-        <div class="code-box-row">
-          <pre class="mono">guix package --list-installed | cut -f1 | curl -fsSL --data-binary @- "%s/v1/commit"</pre>
-          <button type="button" class="btn" data-copy="guix package --list-installed | cut -f1 | curl -fsSL --data-binary @- &quot;%s/v1/commit&quot;" onclick="copyFromBtn(this)">Copy</button>
-        </div>
-      </div>
     </div>
   </div>`,
-		escBaseURL, escBaseURL,
-		escBaseURL, escBaseURL,
 		escBaseURL, escBaseURL,
 		escBaseURL, escBaseURL,
 	)
@@ -844,7 +824,7 @@ func renderInteractiveResolverPanel(defaultMaxPending int) string {
       <div class="form-grid">
         <div class="field">
           <label for="f-pkgs">Packages (comma or space separated, leave empty for whole-evaluation mode)</label>
-          <input type="text" id="f-pkgs" name="pkgs" class="mono" placeholder="e.g. emacs, git, gcc-toolchain@14, linux-libre">
+          <input type="text" id="f-pkgs" name="pkgs" class="mono" placeholder="e.g. emacs, git, linux-libre">
         </div>
         <div class="field" style="width:150px;">
           <label for="f-max-pending">Max Pending (whole-eval)</label>
