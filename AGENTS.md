@@ -107,32 +107,32 @@ The service listens on `:8080` by default. All endpoints support both GET query 
 
 ### Endpoints
 
-#### 1. Plain-Text Commit Hash (`GET /v1/commit` or `GET /commit`)
+#### 1. Plain-Text Commit Hash (`GET /commit` or `GET /v1/commit`)
 Returns raw 40-character Git commit hash followed by a newline (`text/plain`). Ideal for shell command substitution.
 
 ```bash
 # Get latest ready commit for current architecture (whole-evaluation mode)
-curl -fsSL "http://localhost:8080/v1/commit"
+curl -fsSL "http://localhost:8080/commit"
 
 # Pull latest ready commit directly
-guix pull --commit=$(curl -fsSL "http://localhost:8080/v1/commit?system=x86_64-linux")
+guix pull --commit=$(curl -fsSL "http://localhost:8080/commit?system=x86_64-linux")
 
 # Package mode: find commit where emacs, git, and gcc-toolchain 14 are ready
-curl -fsSL "http://localhost:8080/v1/commit?pkgs=emacs,git,gcc-toolchain@14"
+curl -fsSL "http://localhost:8080/commit?pkgs=emacs,git,gcc-toolchain@14"
 
 # POST package list from installed packages (avoids URL length limits)
-guix package --list-installed | cut -f1 | curl -fsSL --data-binary @- "http://localhost:8080/v1/commit"
+guix package --list-installed | cut -f1 | curl -fsSL --data-binary @- "http://localhost:8080/commit"
 ```
 
-#### 2. Channel Specification (`GET /v1/channels.scm` or `GET /channels.scm`)
-Redirects (HTTP 302) to the upstream Cuirass `/eval/<id>/channels.scm` specification with upstream channel introduction, ready for `downloaded-channels`, `~/.config/guix/channels.scm`, or `guix time-machine` (pass `?raw=1` to disable redirection).
+#### 2. Channel Specification (`GET /channels.scm` or `GET /v1/channels.scm`)
+Redirects (HTTP 302) to the upstream Cuirass `/eval/<id>/channels.scm` specification with upstream channel introduction, ready for `downloaded-channels`, `~/.config/guix/channels.scm`, or `guix time-machine`.
 
 ```bash
 # Overwrite channels.scm with latest ready commit
-curl -fsSL "http://localhost:8080/v1/channels.scm?system=x86_64-linux" > ~/.config/guix/channels.scm
+curl -fsSL "http://localhost:8080/channels.scm?system=x86_64-linux" > ~/.config/guix/channels.scm
 
 # Run an ephemeral shell with guaranteed prebuilt binaries
-guix time-machine -C <(curl -fsSL "http://localhost:8080/v1/channels.scm?pkgs=emacs,git") -- shell emacs git
+guix time-machine -C <(curl -fsSL "http://localhost:8080/channels.scm?pkgs=emacs,git") -- shell emacs git
 ```
 
 #### 3. Evaluation Status Details (`GET /v1/status` or `GET /status`)

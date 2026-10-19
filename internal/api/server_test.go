@@ -153,6 +153,8 @@ func TestDashboardHTMLAndPlainIndex(t *testing.T) {
 		`<pre class="mono">guix pull --commit=ffff6666eeee7777dddd8888cccc9999bbbb0000</pre>`,
 		`data-copy="guix pull --commit=ffff6666eeee7777dddd8888cccc9999bbbb0000" onclick="copyFromBtn(this)"`,
 		`data-copy="ffff6666eeee7777dddd8888cccc9999bbbb0000" onclick="copyFromBtn(this)">Copy Commit</button>`,
+		"Track automatically via ~/.config/guix/channels.scm:",
+		"(downloaded-channels",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("HTML overview missing %q", want)
@@ -189,6 +191,9 @@ func TestDashboardHTMLAndPlainIndex(t *testing.T) {
 	plain := rec.Body.String()
 	if !strings.Contains(plain, "ffff6666eeee7777dddd8888cccc9999bbbb0000") {
 		t.Fatalf("plain index missing ready commit:\n%s", plain)
+	}
+	if !strings.Contains(plain, "downloaded-channels") {
+		t.Fatalf("plain index missing downloaded-channels:\n%s", plain)
 	}
 }
 

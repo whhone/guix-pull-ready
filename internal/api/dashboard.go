@@ -188,11 +188,11 @@ func renderPlainIndex(st dashboardState) string {
 
 	fmt.Fprintf(&b, "Usage Examples:\n")
 	fmt.Fprintf(&b, "  # 1. Pull latest ready commit for x86_64-linux:\n")
-	fmt.Fprintf(&b, "  guix pull --commit=$(curl -fsSL \"%s/v1/commit\")\n\n", st.BaseURL)
-	fmt.Fprintf(&b, "  # 2. Generate ~/.config/guix/channels.scm:\n")
-	fmt.Fprintf(&b, "  curl -fsSL \"%s/v1/channels.scm\" > ~/.config/guix/channels.scm\n\n", st.BaseURL)
+	fmt.Fprintf(&b, "  guix pull --commit=$(curl -fsSL \"%s/commit\")\n\n", st.BaseURL)
+	fmt.Fprintf(&b, "  # 2. Track automatically via ~/.config/guix/channels.scm:\n")
+	fmt.Fprintf(&b, "  (downloaded-channels \"%s/channels.scm\")\n\n", st.BaseURL)
 	fmt.Fprintf(&b, "  # 3. Inspect detailed JSON status:\n")
-	fmt.Fprintf(&b, "  curl -fsSL \"%s/v1/status\"\n", st.BaseURL)
+	fmt.Fprintf(&b, "  curl -fsSL \"%s/status\"\n", st.BaseURL)
 	return b.String()
 }
 
@@ -709,16 +709,17 @@ func renderCLIExamplesBlock(ov systemOverview, escBaseURL string) string {
       <div class="example-item">
         <div class="example-desc">Pull the newest ready commit dynamically via API:</div>
         <div class="code-box-row">
-          <pre class="mono">guix pull --commit=$(curl -fsSL "%s/v1/commit")</pre>
-          <button type="button" class="btn" data-copy="guix pull --commit=$(curl -fsSL &quot;%s/v1/commit&quot;)" onclick="copyFromBtn(this)">Copy</button>
+          <pre class="mono">guix pull --commit=$(curl -fsSL "%s/commit")</pre>
+          <button type="button" class="btn" data-copy="guix pull --commit=$(curl -fsSL &quot;%s/commit&quot;)" onclick="copyFromBtn(this)">Copy</button>
         </div>
       </div>
       <div class="example-item">
-        <div class="example-desc">Generate ~/.config/guix/channels.scm:</div>
+        <div class="example-desc">Track automatically via ~/.config/guix/channels.scm:</div>
         <div class="code-box-row">
-          <pre class="mono">curl -fsSL "%s/v1/channels.scm" &gt; ~/.config/guix/channels.scm</pre>
-          <button type="button" class="btn" data-copy="curl -fsSL &quot;%s/v1/channels.scm&quot; &gt; ~/.config/guix/channels.scm" onclick="copyFromBtn(this)">Copy</button>
+          <pre class="mono">(downloaded-channels "%s/channels.scm")</pre>
+          <button type="button" class="btn" data-copy="(downloaded-channels &quot;%s/channels.scm&quot;)" onclick="copyFromBtn(this)">Copy</button>
         </div>
+        <div style="margin-top:0.35rem;font-size:0.8rem;color:var(--text-muted);">See GNU Guix manual on <a href="https://guix.gnu.org/manual/devel/en/html_node/Channels-with-Substitutes.html" target="_blank" rel="noopener">Channels with Substitutes</a>.</div>
       </div>
     </div>
   </div>`,
@@ -1076,7 +1077,7 @@ async function runFinder(ev) {
         escapeHtml(data.untracked_packages.join(", ")) + '</code></div>';
     }
     const cuirassEvalUrl = "https://ci.guix.gnu.org/eval/" + data.evaluation_id + "/channels.scm";
-    const channelsQueryUrl = window.location.origin + "/v1/channels.scm?" + params.toString();
+    const channelsQueryUrl = window.location.origin + "/channels.scm?" + params.toString();
     const downloadedChannelsExpr = '(downloaded-channels\n  "' + channelsQueryUrl + '")';
     out.innerHTML =
       '<div style="padding:0.85rem;background:var(--code-bg);border:1px solid var(--border);border-radius:6px;">' +
