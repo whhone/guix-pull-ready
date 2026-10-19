@@ -28,7 +28,7 @@ Options:
   -n, --limit=N         number of master evaluations to scan (default: 40)
       --max-pending=N   whole-eval mode: tolerate up to N pending builds (default: 0)
       --allow-failed    package mode: failed builds do not block
-      --require-pull    also require a successful 'guix' spec evaluation build
+      --no-require-pull do not require a successful 'guix' spec evaluation build
       --server=URL      Cuirass server URL (default: https://ci.guix.gnu.org)
   -v, --verbose         show per-evaluation status while scanning
   -h, --help            display this help and exit
@@ -50,7 +50,7 @@ Examples:
                      (verbose? . #f)
                      (max-pending . 0)
                      (allow-failed? . #f)
-                     (require-pull? . #f)
+                     (require-pull? . #t)
                      (server . ,%default-server)
                      (operands . ()))))
     (match args
@@ -63,6 +63,8 @@ Examples:
        (loop rest (alist-set opts 'allow-failed? #t)))
       (("--require-pull" . rest)
        (loop rest (alist-set opts 'require-pull? #t)))
+      (("--no-require-pull" . rest)
+       (loop rest (alist-set opts 'require-pull? #f)))
       (((? (lambda (s) (string-prefix? "--limit=" s)) s) . rest)
        (loop rest (alist-set opts 'limit (string->number (substring s 8)))))
       (("-n" n . rest)

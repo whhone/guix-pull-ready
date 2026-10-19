@@ -277,4 +277,52 @@ func TestStatusPageHTMLAndContentNegotiation(t *testing.T) {
 		t.Fatalf("got eval %d, want 700", pkgRes.EvaluationID)
 	}
 }
+func TestRequirePullDefaultsAndOverrides(t *testing.T) {
+	st, err := store.Open(":memory:", "https://ci.guix.gnu.org", []string{"x86_64-linux"})
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
 
+	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
+	st.UpdateEvaluations([]store.EvaluationRecord{
+		{ID: 801, Commit: "8888111122223333444455556666777788889999", Timestamp: now},
+		{ID: 800, Commit: "7777111122223333444455556666777788889999", Timestamp: now.Add(-time.Hour)},
+	}, 40)
+
+	// Eval 801 has completed jobs, but pull is NOT ready (e.g. guix job pending/failed)
+	st.SetPullStatus("8888111122223333444455556666777788889999", "x86_64-linux", 1801, false)
+	st.UpsertSystemEval(801, "8888111122223333444455556666777788889999", "x86_64-linux", []cuirass.Job{
+		{BuildID: 101, Name: "emacs.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "29.4"},
+	})
+
+	// Eval 800 has completed jobs and pull IS ready
+	st.SetPullStatus("7777111122223333444455556666777788889999", "x86_64-linux", 1800, true)
+	st.UpsertSystemEval(800, "7777111122223333444455556666777788889999", "x86_64-linux", []cuirass.Job{
+		{BuildID: 100, Name: "emacs.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "29.4"},
+	})
+
+	_ = st.Save()
+	srv := NewServer(st, nil, nil)
+
+	// 1. By default, require_pull is true, so Eval 801 is skipped and Eval 800 is selected
+	req := httptest.NewRequest(http.MethodGet, "/commit", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := strings.TrimSpace(rec.Body.String()); got != "7777111122223333444455556666777788889999" {
+		t.Fatalf("got commit %q, want eval 800 commit (77771111...)", got)
+	}
+
+	// 2. With require_pull=false, Eval 801 is accepted
+	req = httptest.NewRequest(http.MethodGet, "/commit?require_pull=false", nil)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := strings.TrimSpace(rec.Body.String()); got != "8888111122223333444455556666777788889999" {
+		t.Fatalf("got commit %q, want eval 801 commit (88881111...)", got)
+	}
+}

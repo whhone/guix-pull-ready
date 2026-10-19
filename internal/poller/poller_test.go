@@ -106,8 +106,9 @@ func TestPollerIncrementalSyncAndBuildCache(t *testing.T) {
 	// Resolve gcc-toolchain@13 -> triggers lazy build version lookup for build 902 and 903
 	p.ResolveMissingVersions(ctx, "x86_64-linux", []string{"gcc-toolchain@13"})
 	res, err := resolver.Resolve(st.Snapshot(), resolver.Query{
-		System:   "x86_64-linux",
-		Packages: []string{"emacs", "gcc-toolchain@13"},
+		System:      "x86_64-linux",
+		Packages:    []string{"emacs", "gcc-toolchain@13"},
+		RequirePull: resolver.Bool(false),
 	})
 	if err != nil {
 		t.Fatalf("Resolve failed: %v", err)

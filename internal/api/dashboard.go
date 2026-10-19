@@ -837,7 +837,7 @@ func renderInteractiveResolverPanel(defaultMaxPending int) string {
         </div>
       </div>
       <div class="checkboxes">
-        <label><input type="checkbox" id="f-require-pull"> Require prebuilt <code>guix pull</code> binary</label>
+        <label><input type="checkbox" id="f-require-pull" checked> Require prebuilt <code>guix pull</code> binary</label>
         <label><input type="checkbox" id="f-allow-failed"> Allow failed builds in package mode</label>
       </div>
     </form>
@@ -1061,7 +1061,7 @@ async function runFinder(ev) {
   } else {
     params.set("max_pending", maxPending);
   }
-  if (reqPull) params.set("require_pull", "true");
+  if (!reqPull) params.set("require_pull", "false");
   if (allowFailed) params.set("allow_failed", "true");
 
   try {

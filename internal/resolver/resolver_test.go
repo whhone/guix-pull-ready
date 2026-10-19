@@ -61,8 +61,17 @@ func TestResolveWholeEvaluationMode(t *testing.T) {
 	st := buildTestStore(t)
 	snap := st.Snapshot()
 
-	// Default max_pending = 0 -> should pick Eval 299 (1 behind master)
+	// Default: max_pending = 0 and require_pull = true -> should pick Eval 298 (299 & 300 have pullReady=false)
 	res, err := Resolve(snap, Query{System: "x86_64-linux", MaxPending: 0})
+	if err != nil {
+		t.Fatalf("Resolve failed: %v", err)
+	}
+	if res.EvaluationID != 298 || !res.PullReady {
+		t.Fatalf("got eval %d (pullReady=%v), want 298 (true)", res.EvaluationID, res.PullReady)
+	}
+
+	// require_pull = false, max_pending = 0 -> should pick Eval 299 (1 behind master)
+	res, err = Resolve(snap, Query{System: "x86_64-linux", MaxPending: 0, RequirePull: Bool(false)})
 	if err != nil {
 		t.Fatalf("Resolve failed: %v", err)
 	}
@@ -70,22 +79,13 @@ func TestResolveWholeEvaluationMode(t *testing.T) {
 		t.Fatalf("got eval %d (behind %d), want 299 (behind 1)", res.EvaluationID, res.EvaluationsBehind)
 	}
 
-	// max_pending = 2 -> should pick Eval 300 (latest)
-	res, err = Resolve(snap, Query{System: "x86_64-linux", MaxPending: 2})
+	// require_pull = false, max_pending = 2 -> should pick Eval 300 (latest)
+	res, err = Resolve(snap, Query{System: "x86_64-linux", MaxPending: 2, RequirePull: Bool(false)})
 	if err != nil {
 		t.Fatalf("Resolve failed: %v", err)
 	}
 	if res.EvaluationID != 300 || res.EvaluationsBehind != 0 {
 		t.Fatalf("got eval %d, want 300", res.EvaluationID)
-	}
-
-	// require_pull = true -> should pick Eval 298
-	res, err = Resolve(snap, Query{System: "x86_64-linux", MaxPending: 0, RequirePull: true})
-	if err != nil {
-		t.Fatalf("Resolve failed: %v", err)
-	}
-	if res.EvaluationID != 298 || !res.PullReady {
-		t.Fatalf("got eval %d (pullReady=%v), want 298 (true)", res.EvaluationID, res.PullReady)
 	}
 }
 
@@ -93,7 +93,9 @@ func TestResolvePackageMode(t *testing.T) {
 	st := buildTestStore(t)
 	snap := st.Snapshot()
 
-	// emacs + git + gcc-toolchain@13 -> ready in Eval 300!
+	// 1. Default (require_pull = true):
+	// Even though emacs + git + gcc-toolchain@13 succeeded in 300, Eval 300 has pullReady=false.
+	// Therefore default require_pull=true skips 300 and 299, picking Eval 298.
 	res, err := Resolve(snap, Query{
 		System:   "x86_64-linux",
 		Packages: []string{"emacs", "git", "gcc-toolchain@13", "my-custom-local-pkg"},
@@ -101,17 +103,32 @@ func TestResolvePackageMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve package mode failed: %v", err)
 	}
-	if res.EvaluationID != 300 {
-		t.Fatalf("got eval %d, want 300", res.EvaluationID)
+	if res.EvaluationID != 298 {
+		t.Fatalf("got eval %d, want 298 (require_pull default true)", res.EvaluationID)
 	}
 	if len(res.UntrackedPackages) != 1 || res.UntrackedPackages[0] != "my-custom-local-pkg" {
 		t.Fatalf("unexpected untracked packages: %v", res.UntrackedPackages)
 	}
 
-	// gcc-toolchain (unversioned -> picks latest 14.2.0, which is pending in 300, succeeded in 299)
+	// 2. With RequirePull = false:
+	// emacs + git + gcc-toolchain@13 -> ready in Eval 300!
 	res, err = Resolve(snap, Query{
-		System:   "x86_64-linux",
-		Packages: []string{"emacs", "gcc-toolchain"},
+		System:      "x86_64-linux",
+		Packages:    []string{"emacs", "git", "gcc-toolchain@13"},
+		RequirePull: Bool(false),
+	})
+	if err != nil {
+		t.Fatalf("Resolve package mode failed: %v", err)
+	}
+	if res.EvaluationID != 300 {
+		t.Fatalf("got eval %d, want 300", res.EvaluationID)
+	}
+
+	// gcc-toolchain (unversioned -> picks latest 14.2.0, pending in 300, succeeded in 299 with RequirePull=false)
+	res, err = Resolve(snap, Query{
+		System:      "x86_64-linux",
+		Packages:    []string{"emacs", "gcc-toolchain"},
+		RequirePull: Bool(false),
 	})
 	if err != nil {
 		t.Fatalf("Resolve failed: %v", err)
@@ -120,10 +137,11 @@ func TestResolvePackageMode(t *testing.T) {
 		t.Fatalf("got eval %d, want 299", res.EvaluationID)
 	}
 
-	// emacs + git + gcc-toolchain@14 -> git failed in 299, so without allow_failed it picks 298
+	// emacs + git + gcc-toolchain@14 -> git failed in 299, so even without pull check it picks 298
 	res, err = Resolve(snap, Query{
-		System:   "x86_64-linux",
-		Packages: []string{"emacs", "git", "gcc-toolchain@14"},
+		System:      "x86_64-linux",
+		Packages:    []string{"emacs", "git", "gcc-toolchain@14"},
+		RequirePull: Bool(false),
 	})
 	if err != nil {
 		t.Fatalf("Resolve failed: %v", err)
@@ -132,10 +150,11 @@ func TestResolvePackageMode(t *testing.T) {
 		t.Fatalf("got eval %d, want 298", res.EvaluationID)
 	}
 
-	// With allow_failed = true, emacs + git + gcc-toolchain@14 succeeds in 299
+	// With allow_failed = true and RequirePull = false, emacs + git + gcc-toolchain@14 succeeds in 299
 	res, err = Resolve(snap, Query{
 		System:      "x86_64-linux",
 		AllowFailed: true,
+		RequirePull: Bool(false),
 		Packages:    []string{"emacs", "git", "gcc-toolchain@14"},
 	})
 	if err != nil {

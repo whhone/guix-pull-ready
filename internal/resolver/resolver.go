@@ -38,8 +38,13 @@ type Query struct {
 	Limit       int
 	MaxPending  int
 	AllowFailed bool
-	RequirePull bool
+	RequirePull *bool // nil defaults to true
 	Packages    []string
+}
+
+// Bool returns a pointer to the given boolean, useful for setting Query.RequirePull.
+func Bool(b bool) *bool {
+	return &b
 }
 
 // Result contains the resolved Guix commit and evaluation metadata.
@@ -90,12 +95,16 @@ func Resolve(snap *store.Snapshot, q Query) (*Result, error) {
 }
 
 func resolveWholeEvalMode(snap *store.Snapshot, evals []store.EvaluationRecord, q Query) (*Result, error) {
+	requirePull := true
+	if q.RequirePull != nil {
+		requirePull = *q.RequirePull
+	}
 	for idx, ev := range evals {
 		data, ok := snap.ByEvalSystem[store.EvalSystemKey{EvalID: ev.ID, System: q.System}]
 		if !ok || data.TotalJobs == 0 {
 			continue
 		}
-		if q.RequirePull && !data.PullReady {
+		if requirePull && !data.PullReady {
 			continue
 		}
 		if data.PendingJobs <= q.MaxPending {
@@ -155,12 +164,17 @@ func resolvePackageMode(snap *store.Snapshot, evals []store.EvaluationRecord, q 
 		untrackedSpecs = []string{}
 	}
 
+	requirePull := true
+	if q.RequirePull != nil {
+		requirePull = *q.RequirePull
+	}
+
 	for idx, ev := range evals {
 		data, ok := snap.ByEvalSystem[store.EvalSystemKey{EvalID: ev.ID, System: q.System}]
 		if !ok || data.TotalJobs == 0 {
 			continue
 		}
-		if q.RequirePull && !data.PullReady {
+		if requirePull && !data.PullReady {
 			continue
 		}
 

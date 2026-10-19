@@ -270,7 +270,7 @@ func (s *Server) resolveRequest(r *http.Request) (*resolver.Result, error) {
 		Limit:       parseIntParam(qParams.Get("limit"), 40, 1, 100),
 		MaxPending:  parseIntParam(qParams.Get("max_pending"), 0, 0, 100000),
 		AllowFailed: parseBoolParam(qParams.Get("allow_failed")),
-		RequirePull: parseBoolParam(qParams.Get("require_pull")),
+		RequirePull: parseBoolParamPtr(qParams.Get("require_pull"), true),
 	}
 
 	for _, v := range qParams["pkgs"] {
@@ -385,6 +385,25 @@ func parseBoolParam(val string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func parseBoolParamPtr(val string, defVal bool) *bool {
+	val = strings.ToLower(strings.TrimSpace(val))
+	if val == "" {
+		b := defVal
+		return &b
+	}
+	switch val {
+	case "1", "true", "yes", "on":
+		b := true
+		return &b
+	case "0", "false", "no", "off":
+		b := false
+		return &b
+	default:
+		b := defVal
+		return &b
 	}
 }
 
