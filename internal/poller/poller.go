@@ -59,6 +59,14 @@ func New(client *cuirass.Client, st *store.Store, cfg Config) *Poller {
 	}
 }
 
+// CuirassBaseURL returns the upstream Cuirass base URL.
+func (p *Poller) CuirassBaseURL() string {
+	if p == nil || p.client == nil {
+		return ""
+	}
+	return p.client.BaseURL()
+}
+
 // Status returns the current health status of the poller.
 func (p *Poller) Status() (syncing bool, lastEnd time.Time, lastErr error) {
 	p.mu.RLock()

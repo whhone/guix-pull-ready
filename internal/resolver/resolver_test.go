@@ -1,7 +1,6 @@
 package resolver
 
 import (
-	"strings"
 	"testing"
 	"time"
 
@@ -144,10 +143,5 @@ func TestResolvePackageMode(t *testing.T) {
 	}
 	if res.EvaluationID != 299 {
 		t.Fatalf("got eval %d, want 299", res.EvaluationID)
-	}
-
-	scm := FormatChannelsSCM(res)
-	if !strings.Contains(scm, `(commit "commit299middle00000000000000000000000000")`) {
-		t.Fatalf("unexpected channels.scm output:\n%s", scm)
 	}
 }

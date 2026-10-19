@@ -125,7 +125,7 @@ guix package --list-installed | cut -f1 | curl -fsSL --data-binary @- "http://lo
 ```
 
 #### 2. Channel Specification (`GET /v1/channels.scm` or `GET /channels.scm`)
-Returns a Scheme snippet (`text/x-scheme`) with evaluation metadata in comments, ready for `~/.config/guix/channels.scm` or `guix time-machine`.
+Redirects (HTTP 302) to the upstream Cuirass `/eval/<id>/channels.scm` specification with upstream channel introduction, ready for `downloaded-channels`, `~/.config/guix/channels.scm`, or `guix time-machine` (pass `?raw=1` to disable redirection).
 
 ```bash
 # Overwrite channels.scm with latest ready commit

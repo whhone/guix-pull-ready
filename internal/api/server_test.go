@@ -77,21 +77,31 @@ func TestGetCommitWholeEvalAndPackageMode(t *testing.T) {
 func TestPostPackageManifestAndChannelsSCM(t *testing.T) {
 	srv := setupTestServer(t)
 
-	// POST newline-separated package list to /v1/channels.scm
+	// 1. POST newline-separated package list to /v1/channels.scm -> 302 redirect to Cuirass
 	body := strings.NewReader("emacs\ngit\nmy-custom-pkg\n")
 	req := httptest.NewRequest(http.MethodPost, "/v1/channels.scm", body)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusFound)
 	}
-	out := rec.Body.String()
-	if !strings.Contains(out, `(commit "aaaa1111bbbb2222cccc3333dddd4444eeee5555")`) {
-		t.Fatalf("channels.scm missing expected commit:\n%s", out)
+	loc := rec.Header().Get("Location")
+	wantLoc := "https://ci.guix.gnu.org/eval/700/channels.scm"
+	if loc != wantLoc {
+		t.Fatalf("got Location %q, want %q", loc, wantLoc)
 	}
-	if !strings.Contains(out, "Skipped local:       my-custom-pkg") {
-		t.Fatalf("channels.scm missing skipped local comment:\n%s", out)
+
+	// 2. GET /v1/channels.scm?pkgs=emacs,git -> 302 redirect to Cuirass
+	req = httptest.NewRequest(http.MethodGet, "/v1/channels.scm?pkgs=emacs,git", nil)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusFound)
+	}
+	if loc := rec.Header().Get("Location"); loc != wantLoc {
+		t.Fatalf("got Location %q, want %q", loc, wantLoc)
 	}
 }
 

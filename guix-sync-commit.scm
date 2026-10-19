@@ -467,10 +467,7 @@ Examples:
     (format #t "~%To update your channels:~%")
     (format #t "  guix pull --commit=~a~%~%" commit)
     (format #t ";; In ~~/.config/guix/channels.scm:~%")
-    (format #t "(list (channel~%")
-    (format #t "       (inherit %default-guix-channel)~%")
-    (format #t "       (url \"https://codeberg.org/guix/guix.git\")~%")
-    (format #t "       (commit \"~a\")))~%" commit)
+    (format #t "(downloaded-channels \"~a/eval/~a/channels.scm\")~%" server eval-id)
     (format #t "========================================================================~%")
     (exit 0)))
 
