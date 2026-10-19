@@ -24,11 +24,16 @@ Public instance: **https://guix-pull-ready.whhone.com**
 guix pull --commit=$(curl -fsSL https://guix-pull-ready.whhone.com/commit)
 ```
 
-### 2. Generate a channels.scm specification
+### 2. Track automatically via channels.scm
 
-```bash
-curl -fsSL https://guix-pull-ready.whhone.com/channels.scm > ~/.config/guix/channels.scm
+Configure `~/.config/guix/channels.scm` to automatically fetch the newest ready commit on every `guix pull` using Guix's built-in `downloaded-channels`:
+
+```scheme
+(downloaded-channels
+  "https://guix-pull-ready.whhone.com/channels.scm")
 ```
+
+To learn more, see the GNU Guix manual section on [Channels with Substitutes](https://guix.gnu.org/manual/devel/en/html_node/Channels-with-Substitutes.html).
 
 ### 3. Query for specific packages
 
