@@ -228,3 +228,118 @@ func TestPollerFairRoundRobinRefresh(t *testing.T) {
 	}
 }
 
+func TestPollerGuixPullReadyRefreshedForCompletedMasterEval(t *testing.T) {
+	var masterCalls atomic.Int32
+	var guixPullCalls atomic.Int32
+	var guixJobSucceeded atomic.Bool
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/evaluations":
+			spec := r.URL.Query().Get("spec")
+			if spec == "guix" {
+				_, _ = w.Write([]byte(`[
+					{"id":1700,"specification":"guix","timestamp":1729170000,"checkouts":[{"commit":"commit700","channel":"guix"}]}
+				]`))
+				return
+			}
+			_, _ = w.Write([]byte(`[
+				{"id":700,"specification":"master","timestamp":1729170000,"checkouts":[{"commit":"commit700","channel":"guix"}]}
+			]`))
+
+		case "/api/jobs":
+			evalID := r.URL.Query().Get("evaluation")
+			switch evalID {
+			case "700":
+				masterCalls.Add(1)
+				// Master evaluation is already complete (0 pending jobs)
+				_, _ = w.Write([]byte(`[
+					{"build":701,"status":0,"name":"emacs.x86_64-linux"}
+				]`))
+			case "1700":
+				guixPullCalls.Add(1)
+				if guixJobSucceeded.Load() {
+					_, _ = w.Write([]byte(`[{"build":2700,"status":0,"name":"guix.x86_64-linux"}]`))
+				} else {
+					// Still in progress / pending in cycle 1
+					_, _ = w.Write([]byte(`[{"build":2700,"status":-1,"name":"guix.x86_64-linux"}]`))
+				}
+			}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	client := cuirass.NewClient(srv.URL)
+	st, err := store.Open(":memory:", srv.URL, []string{"x86_64-linux"})
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+
+	p := New(client, st, Config{
+		Systems:      []string{"x86_64-linux"},
+		Limit:        10,
+		PollInterval: time.Minute,
+	})
+
+	ctx := context.Background()
+
+	// Cycle 1: master is complete, but guix pull job is still pending (-1)
+	if err := p.SyncOnce(ctx); err != nil {
+		t.Fatalf("cycle 1 failed: %v", err)
+	}
+
+	if masterCalls.Load() != 1 {
+		t.Fatalf("expected 1 call to master eval 700, got %d", masterCalls.Load())
+	}
+	if guixPullCalls.Load() != 1 {
+		t.Fatalf("expected 1 call to guix pull eval 1700, got %d", guixPullCalls.Load())
+	}
+	if !st.IsEvalSystemComplete(700, "x86_64-linux") {
+		t.Fatalf("expected master eval 700 to be marked complete")
+	}
+
+	snap1 := st.Snapshot()
+	data1 := snap1.ByEvalSystem[store.EvalSystemKey{EvalID: 700, System: "x86_64-linux"}]
+	if data1 == nil || data1.PullReady {
+		t.Fatalf("expected data1 to exist and PullReady to be false in cycle 1, got %+v", data1)
+	}
+
+	// Cycle 2: guix pull job finishes and succeeds (status 0).
+	// Master eval 700 is complete, so master jobs must NOT be re-polled,
+	// but guix pull status must be polled and updated to ready!
+	guixJobSucceeded.Store(true)
+	if err := p.SyncOnce(ctx); err != nil {
+		t.Fatalf("cycle 2 failed: %v", err)
+	}
+
+	if masterCalls.Load() != 1 {
+		t.Fatalf("expected master eval 700 NOT to be re-fetched, but got %d calls", masterCalls.Load())
+	}
+	if guixPullCalls.Load() != 2 {
+		t.Fatalf("expected guix pull eval 1700 to be polled again in cycle 2, got %d calls", guixPullCalls.Load())
+	}
+
+	snap2 := st.Snapshot()
+	data2 := snap2.ByEvalSystem[store.EvalSystemKey{EvalID: 700, System: "x86_64-linux"}]
+	if data2 == nil || !data2.PullReady {
+		t.Fatalf("expected data2 to have PullReady=true in cycle 2, got %+v", data2)
+	}
+
+	cachedPull, ok := st.GetPullStatus("commit700", "x86_64-linux")
+	if !ok || !cachedPull.Ready {
+		t.Fatalf("expected cached pull status to be ready, got ok=%v, status=%+v", ok, cachedPull)
+	}
+
+	// Cycle 3: once ready, guix pull job must NOT be polled again!
+	if err := p.SyncOnce(ctx); err != nil {
+		t.Fatalf("cycle 3 failed: %v", err)
+	}
+	if guixPullCalls.Load() != 2 {
+		t.Fatalf("expected guix pull eval 1700 NOT to be polled after succeeding, got %d calls", guixPullCalls.Load())
+	}
+}
+
+

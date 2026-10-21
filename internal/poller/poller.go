@@ -186,6 +186,35 @@ func (p *Poller) syncEvaluations(ctx context.Context) error {
 	var updatedCount int
 
 	for _, sys := range p.cfg.Systems {
+		// Update guix pull status for evaluations in the window that are not yet ready.
+		// Pull readiness is independent of master evaluation completeness: a commit whose
+		// master package collection is already complete (0 pending) might still have its
+		// 'guix' jobset build in progress, or vice-versa.
+		var pullStatusChanged bool
+		for _, ev := range records {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			pullEvID, hasPullEval := guixEvalByCommit[ev.Commit]
+			cachedPull, hasCachedPull := p.store.GetPullStatus(ev.Commit, sys)
+			if !hasPullEval && hasCachedPull && cachedPull.EvalID > 0 {
+				pullEvID = cachedPull.EvalID
+				hasPullEval = true
+			}
+			if hasPullEval {
+				if !hasCachedPull || !cachedPull.Ready || cachedPull.EvalID != pullEvID {
+					pullReady := p.checkGuixPullReady(ctx, pullEvID, sys)
+					p.store.SetPullStatus(ev.Commit, sys, pullEvID, pullReady)
+					if !hasCachedPull || cachedPull.Ready != pullReady || cachedPull.EvalID != pullEvID {
+						pullStatusChanged = true
+					}
+				}
+			}
+		}
+		if pullStatusChanged {
+			p.store.PublishSnapshot()
+		}
+
 		var uncachedEvals []store.EvaluationRecord
 		var incompleteEvals []store.EvaluationRecord
 
@@ -245,15 +274,6 @@ func (p *Poller) syncEvaluations(ctx context.Context) error {
 		for _, ev := range evalsToFetch {
 			if ctx.Err() != nil {
 				return ctx.Err()
-			}
-
-			// Update guix pull status if not already known-ready.
-			if pullEvID, hasPullEval := guixEvalByCommit[ev.Commit]; hasPullEval {
-				cachedPull, ok := p.store.GetPullStatus(ev.Commit, sys)
-				if !ok || !cachedPull.Ready || cachedPull.EvalID != pullEvID {
-					pullReady := p.checkGuixPullReady(ctx, pullEvID, sys)
-					p.store.SetPullStatus(ev.Commit, sys, pullEvID, pullReady)
-				}
 			}
 
 			jobs, err := p.client.EvaluationJobs(ctx, ev.ID, sys)
