@@ -1065,7 +1065,9 @@ async function runFinder(ev) {
   if (allowFailed) params.set("allow_failed", "true");
 
   try {
-    const statusResp = await fetch("/v1/status?" + params.toString());
+    const statusResp = await fetch("/status?" + params.toString(), {
+      headers: { "Accept": "application/json" }
+    });
     const data = await statusResp.json();
     if (!statusResp.ok) {
       out.innerHTML = '<div class="badge badge-err">Error: ' + escapeHtml(data.error || statusResp.statusText) + '</div>';

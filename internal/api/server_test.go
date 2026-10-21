@@ -50,7 +50,7 @@ func TestGetCommitWholeEvalAndPackageMode(t *testing.T) {
 	srv := setupTestServer(t)
 
 	// 1. Whole-evaluation mode (default max_pending=0) -> Eval 699
-	req := httptest.NewRequest(http.MethodGet, "/v1/commit?system=x86_64-linux", nil)
+	req := httptest.NewRequest(http.MethodGet, "/commit?system=x86_64-linux", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -62,7 +62,7 @@ func TestGetCommitWholeEvalAndPackageMode(t *testing.T) {
 	}
 
 	// 2. Package mode via GET ?pkgs=emacs,git -> Eval 700
-	req = httptest.NewRequest(http.MethodGet, "/v1/commit?pkgs=emacs,git", nil)
+	req = httptest.NewRequest(http.MethodGet, "/commit?pkgs=emacs,git", nil)
 	rec = httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -77,9 +77,9 @@ func TestGetCommitWholeEvalAndPackageMode(t *testing.T) {
 func TestPostPackageManifestAndChannelsSCM(t *testing.T) {
 	srv := setupTestServer(t)
 
-	// 1. POST newline-separated package list to /v1/channels.scm -> 302 redirect to Cuirass
+	// 1. POST newline-separated package list to /channels.scm -> 302 redirect to Cuirass
 	body := strings.NewReader("emacs\ngit\nmy-custom-pkg\n")
-	req := httptest.NewRequest(http.MethodPost, "/v1/channels.scm", body)
+	req := httptest.NewRequest(http.MethodPost, "/channels.scm", body)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -92,8 +92,8 @@ func TestPostPackageManifestAndChannelsSCM(t *testing.T) {
 		t.Fatalf("got Location %q, want %q", loc, wantLoc)
 	}
 
-	// 2. GET /v1/channels.scm?pkgs=emacs,git -> 302 redirect to Cuirass
-	req = httptest.NewRequest(http.MethodGet, "/v1/channels.scm?pkgs=emacs,git", nil)
+	// 2. GET /channels.scm?pkgs=emacs,git -> 302 redirect to Cuirass
+	req = httptest.NewRequest(http.MethodGet, "/channels.scm?pkgs=emacs,git", nil)
 	rec = httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -108,7 +108,8 @@ func TestPostPackageManifestAndChannelsSCM(t *testing.T) {
 func TestStatusJSONAndHealthz(t *testing.T) {
 	srv := setupTestServer(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/status?system=x86_64-linux", nil)
+	req := httptest.NewRequest(http.MethodGet, "/status?system=x86_64-linux", nil)
+	req.Header.Set("Accept", "application/json")
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -121,6 +122,21 @@ func TestStatusJSONAndHealthz(t *testing.T) {
 	}
 	if res.EvaluationID != 699 || !res.PullReady {
 		t.Fatalf("unexpected status result: %+v", res)
+	}
+
+	// Evaluations endpoint
+	req = httptest.NewRequest(http.MethodGet, "/evaluations?system=x86_64-linux", nil)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var evalData map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &evalData); err != nil {
+		t.Fatalf("evaluations json.Unmarshal: %v", err)
+	}
+	if evalData["system"] != "x86_64-linux" {
+		t.Fatalf("expected system x86_64-linux, got %v", evalData["system"])
 	}
 
 	// Healthz
@@ -172,7 +188,7 @@ func TestDashboardHTMLAndPlainIndex(t *testing.T) {
 		"arch-bar",
 		"aarch64-linux",
 		`/healthz" class="btn mono"`,
-		`/v1/evaluations?system=`,
+		`/evaluations?system=`,
 	} {
 		if strings.Contains(body, unwanted) {
 			t.Fatalf("HTML overview should not contain %q", unwanted)
@@ -228,7 +244,7 @@ func TestStatusPageHTMLAndContentNegotiation(t *testing.T) {
 		}
 	}
 
-	// Clean header check: no raw /healthz, /v1/evaluations, "Evaluations:", "Poller Idle", or arch switcher
+	// Clean header check: no raw /healthz, /evaluations, "Evaluations:", "Poller Idle", or arch switcher
 	for _, unwanted := range []string{
 		"Evaluations:",
 		"Poller Idle",
@@ -236,7 +252,7 @@ func TestStatusPageHTMLAndContentNegotiation(t *testing.T) {
 		"arch-bar",
 		"aarch64-linux",
 		`/healthz" class="btn mono"`,
-		`/v1/evaluations?system=`,
+		`/evaluations?system=`,
 	} {
 		if strings.Contains(htmlBody, unwanted) {
 			t.Fatalf("HTML status page should not contain %q", unwanted)

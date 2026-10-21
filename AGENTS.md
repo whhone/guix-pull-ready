@@ -16,7 +16,7 @@ The repository contains two implementations:
 .
 ├── cmd/guix-sync-server/main.go   # Go service entrypoint, CLI flags, env vars
 ├── internal/
-│   ├── api/                       # HTTP handlers (/v1/commit, /v1/channels.scm, /v1/status, /v1/evaluations, /healthz, /)
+│   ├── api/                       # HTTP handlers (/commit, /channels.scm, /status, /evaluations, /healthz, /)
 │   ├── cuirass/                   # Cuirass REST client, JobStatus enum, nixname parsing, Guix VersionGreater
 │   ├── poller/                    # Incremental background poller and lazy /build/<id> version resolver
 │   ├── resolver/                  # Whole-evaluation and package-list query resolution engine
@@ -107,7 +107,7 @@ The service listens on `:8080` by default. All endpoints support both GET query 
 
 ### Endpoints
 
-#### 1. Plain-Text Commit Hash (`GET /commit` or `GET /v1/commit`)
+#### 1. Plain-Text Commit Hash (`GET /commit`)
 Returns raw 40-character Git commit hash followed by a newline (`text/plain`). Ideal for shell command substitution.
 
 ```bash
@@ -124,7 +124,7 @@ curl -fsSL "http://localhost:8080/commit?pkgs=emacs,git,gcc-toolchain@14"
 guix package --list-installed | cut -f1 | curl -fsSL --data-binary @- "http://localhost:8080/commit"
 ```
 
-#### 2. Channel Specification (`GET /channels.scm` or `GET /v1/channels.scm`)
+#### 2. Channel Specification (`GET /channels.scm`)
 Redirects (HTTP 302) to the upstream Cuirass `/eval/<id>/channels.scm` specification with upstream channel introduction, ready for `downloaded-channels`, `~/.config/guix/channels.scm`, or `guix time-machine`.
 
 ```bash
@@ -135,23 +135,23 @@ curl -fsSL "http://localhost:8080/channels.scm?system=x86_64-linux" > ~/.config/
 guix time-machine -C <(curl -fsSL "http://localhost:8080/channels.scm?pkgs=emacs,git") -- shell emacs git
 ```
 
-#### 3. Evaluation Status Details (`GET /v1/status` or `GET /status`)
+#### 3. Evaluation Status Details (`GET /status`)
 Returns full JSON metadata (`application/json`) including commit, evaluation ID, lag behind master, job counts, and `guix pull` readiness.
 
 ```bash
 # Inspect status for default architecture
-curl -fsSL "http://localhost:8080/v1/status?system=x86_64-linux"
+curl -fsSL "http://localhost:8080/status?system=x86_64-linux"
 
 # Status for package query (includes untracked package detection)
-curl -fsSL "http://localhost:8080/v1/status?pkgs=emacs,git,my-custom-pkg"
+curl -fsSL "http://localhost:8080/status?pkgs=emacs,git,my-custom-pkg"
 ```
 
-#### 4. Cached Evaluations List (`GET /v1/evaluations`)
+#### 4. Cached Evaluations List (`GET /evaluations`)
 Returns recent evaluations tracked in local cache with job counts and pending build samples.
 
 ```bash
 # View last 10 evaluations for aarch64-linux
-curl -fsSL "http://localhost:8080/v1/evaluations?system=aarch64-linux&limit=10"
+curl -fsSL "http://localhost:8080/evaluations?system=aarch64-linux&limit=10"
 ```
 
 #### 5. Health Check (`GET /healthz`)

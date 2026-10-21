@@ -57,13 +57,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/", s.handleIndex)
 	s.mux.HandleFunc("/healthz", s.handleHealthz)
-	s.mux.HandleFunc("/v1/commit", s.handleCommit)
 	s.mux.HandleFunc("/commit", s.handleCommit)
-	s.mux.HandleFunc("/v1/channels.scm", s.handleChannelsSCM)
 	s.mux.HandleFunc("/channels.scm", s.handleChannelsSCM)
-	s.mux.HandleFunc("/v1/status", s.handleStatus)
 	s.mux.HandleFunc("/status", s.handleStatusPageOrAPI)
-	s.mux.HandleFunc("/v1/evaluations", s.handleEvaluations)
+	s.mux.HandleFunc("/evaluations", s.handleEvaluations)
 }
 
 // handleHealthz reports service readiness and background poller status.
