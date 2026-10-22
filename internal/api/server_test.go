@@ -77,31 +77,37 @@ func TestGetCommitWholeEvalAndPackageMode(t *testing.T) {
 func TestPostPackageManifestAndChannelsSCM(t *testing.T) {
 	srv := setupTestServer(t)
 
-	// 1. POST newline-separated package list to /channels.scm -> 302 redirect to Cuirass
+	// 1. POST newline-separated package list to /channels.scm -> returns channels.scm snippet
 	body := strings.NewReader("emacs\ngit\nmy-custom-pkg\n")
 	req := httptest.NewRequest(http.MethodPost, "/channels.scm", body)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusFound {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusFound)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	loc := rec.Header().Get("Location")
-	wantLoc := "https://ci.guix.gnu.org/eval/700/channels.scm"
-	if loc != wantLoc {
-		t.Fatalf("got Location %q, want %q", loc, wantLoc)
+	out := rec.Body.String()
+	if !strings.Contains(out, `(commit "aaaa1111bbbb2222cccc3333dddd4444eeee5555")`) {
+		t.Fatalf("channels.scm missing expected commit:\n%s", out)
+	}
+	if !strings.Contains(out, "Skipped local:       my-custom-pkg") {
+		t.Fatalf("channels.scm missing skipped local comment:\n%s", out)
+	}
+	if !strings.Contains(out, "make-channel-introduction") {
+		t.Fatalf("channels.scm missing channel introduction:\n%s", out)
 	}
 
-	// 2. GET /channels.scm?pkgs=emacs,git -> 302 redirect to Cuirass
+	// 2. GET /channels.scm?pkgs=emacs,git
 	req = httptest.NewRequest(http.MethodGet, "/channels.scm?pkgs=emacs,git", nil)
 	rec = httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusFound {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusFound)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if loc := rec.Header().Get("Location"); loc != wantLoc {
-		t.Fatalf("got Location %q, want %q", loc, wantLoc)
+	out = rec.Body.String()
+	if !strings.Contains(out, `(commit "aaaa1111bbbb2222cccc3333dddd4444eeee5555")`) {
+		t.Fatalf("channels.scm missing expected commit:\n%s", out)
 	}
 }
 

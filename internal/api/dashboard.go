@@ -1065,20 +1065,23 @@ async function runFinder(ev) {
   if (allowFailed) params.set("allow_failed", "true");
 
   try {
-    const statusResp = await fetch("/status?" + params.toString(), {
-      headers: { "Accept": "application/json" }
-    });
+    const [statusResp, scmResp] = await Promise.all([
+      fetch("/status?" + params.toString(), {
+        headers: { "Accept": "application/json" }
+      }),
+      fetch("/channels.scm?" + params.toString())
+    ]);
     const data = await statusResp.json();
     if (!statusResp.ok) {
       out.innerHTML = '<div class="badge badge-err">Error: ' + escapeHtml(data.error || statusResp.statusText) + '</div>';
       return;
     }
+    const scmText = await scmResp.text();
     let untrackedHtml = "";
     if (data.untracked_packages && data.untracked_packages.length > 0) {
       untrackedHtml = '<div style="margin-top:0.4rem;font-size:0.82rem;color:var(--warn-text);">Skipped untracked/local packages: <code>' +
         escapeHtml(data.untracked_packages.join(", ")) + '</code></div>';
     }
-    const cuirassEvalUrl = "https://ci.guix.gnu.org/eval/" + data.evaluation_id + "/channels.scm";
     const channelsQueryUrl = window.location.origin + "/channels.scm?" + params.toString();
     const downloadedChannelsExpr = '(downloaded-channels\n  "' + channelsQueryUrl + '")';
     out.innerHTML =
@@ -1089,12 +1092,13 @@ async function runFinder(ev) {
           '<div class="btn-row">' +
             '<button type="button" data-copy="' + escapeHtml(data.commit) + '" onclick="copyFromBtn(this)">Copy Commit</button>' +
             '<button type="button" data-copy="guix pull --commit=' + escapeHtml(data.commit) + '" onclick="copyFromBtn(this)">Copy guix pull</button>' +
-            '<a class="btn" style="text-decoration:none;" href="' + escapeHtml(cuirassEvalUrl) + '" target="_blank" rel="noopener">Upstream channels.scm</a>' +
+            '<button type="button" data-copy="' + escapeHtml(scmText) + '" onclick="copyFromBtn(this)">Copy channels.scm</button>' +
           '</div>' +
         '</div>' +
         untrackedHtml +
+        '<pre class="code-box" style="background:var(--bg);">' + escapeHtml(scmText) + '</pre>' +
         '<div style="margin-top:0.6rem;font-size:0.85rem;">' +
-          '<div style="margin-bottom:0.25rem;color:var(--text-muted);">Use in <code>~/.config/guix/channels.scm</code> via <code>downloaded-channels</code>:</div>' +
+          '<div style="margin-bottom:0.25rem;color:var(--text-muted);">Or track automatically in <code>~/.config/guix/channels.scm</code> via <code>downloaded-channels</code>:</div>' +
           '<pre class="code-box" style="background:var(--bg);">' + escapeHtml(downloadedChannelsExpr) + '</pre>' +
         '</div>' +
       '</div>';

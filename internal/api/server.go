@@ -112,27 +112,16 @@ func (s *Server) handleCommit(w http.ResponseWriter, r *http.Request) {
 	_, _ = fmt.Fprintf(w, "%s\n", res.Commit)
 }
 
-// handleChannelsSCM redirects to the upstream Cuirass /eval/<id>/channels.scm endpoint.
+// handleChannelsSCM returns a ready-to-use Guix channels.scm snippet with evaluation metadata comments.
 func (s *Server) handleChannelsSCM(w http.ResponseWriter, r *http.Request) {
 	res, err := s.resolveRequest(r)
 	if err != nil {
 		s.writeResolveError(w, r, err, true)
 		return
 	}
-	targetURL := fmt.Sprintf("%s/eval/%d/channels.scm", strings.TrimRight(s.cuirassBaseURL(), "/"), res.EvaluationID)
-	http.Redirect(w, r, targetURL, http.StatusFound)
-}
-
-func (s *Server) cuirassBaseURL() string {
-	if s.poller != nil {
-		if u := s.poller.CuirassBaseURL(); u != "" {
-			return u
-		}
-	}
-	if snap := s.store.Snapshot(); snap != nil && snap.ServerURL != "" {
-		return snap.ServerURL
-	}
-	return "https://ci.guix.gnu.org"
+	w.Header().Set("Content-Type", "text/x-scheme; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.WriteString(w, resolver.FormatChannelsSCM(res))
 }
 
 // handleStatus returns full JSON resolution metadata.
