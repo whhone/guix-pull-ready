@@ -151,7 +151,7 @@ func buildSystemOverview(snap *store.Snapshot, sys string, limit int) systemOver
 // renderPlainIndex renders a concise plain-text overview for CLI users (e.g. `curl http://localhost:8080/`).
 func renderPlainIndex(st dashboardState) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "guix-sync-commit service\n")
+	fmt.Fprintf(&b, "guix-pull-ready service\n")
 	fmt.Fprintf(&b, "========================\n\n")
 
 	hasAnyEval := false
@@ -810,8 +810,8 @@ func renderLatestEvalCard(ov systemOverview, escServerURL string) string {
 		)
 	} else {
 		b.WriteString(`
-      <div class="card-title"><span>Latest Master Evaluation</span></div>
-      <div class="card-meta">Waiting for evaluation data...</div>`)
+			<div class="card-title"><span>Latest Master Evaluation</span></div>
+			<div class="card-meta">Waiting for evaluation data...</div>`)
 	}
 	b.WriteString(`</div>`)
 	return b.String()
@@ -819,58 +819,58 @@ func renderLatestEvalCard(ov systemOverview, escServerURL string) string {
 
 func renderInteractiveResolverPanel(defaultMaxPending int) string {
 	return fmt.Sprintf(`
-  <div class="panel">
-    <h2>Interactive Commit &amp; Package Resolver</h2>
-    <p class="sub">Find the newest commit where your specific packages (or the whole evaluation) have substitutes ready.</p>
-    <form id="finder-form" onsubmit="runFinder(event)">
-      <div class="form-grid">
-        <div class="field">
-          <label for="f-pkgs">Packages (comma or space separated, leave empty for whole-evaluation mode)</label>
-          <input type="text" id="f-pkgs" name="pkgs" class="mono" placeholder="e.g. emacs, git, linux-libre">
-        </div>
-        <div class="field" style="width:150px;">
-          <label for="f-max-pending">Max Pending (whole-eval)</label>
-          <input type="number" id="f-max-pending" name="max_pending" min="0" max="100000" value="%d" class="mono">
-        </div>
-        <div>
-          <button type="submit" class="primary" style="padding:0.52rem 1rem;font-size:0.9rem;">Find Ready Commit</button>
-        </div>
-      </div>
-      <div class="checkboxes">
-        <label><input type="checkbox" id="f-require-pull" checked> Require prebuilt <code>guix pull</code> binary</label>
-        <label><input type="checkbox" id="f-allow-failed"> Allow failed builds in package mode</label>
-      </div>
-    </form>
-    <div id="finder-result"></div>
-  </div>
+	<div class="panel">
+		<h2>Interactive Commit &amp; Package Resolver</h2>
+		<p class="sub">Find the newest commit where your specific packages (or the whole evaluation) have substitutes ready.</p>
+		<form id="finder-form" onsubmit="runFinder(event)">
+			<div class="form-grid">
+				<div class="field">
+					<label for="f-pkgs">Packages (comma or space separated, leave empty for whole-evaluation mode)</label>
+					<input type="text" id="f-pkgs" name="pkgs" class="mono" placeholder="e.g. emacs, git, linux-libre">
+				</div>
+				<div class="field" style="width:150px;">
+					<label for="f-max-pending">Max Pending (whole-eval)</label>
+					<input type="number" id="f-max-pending" name="max_pending" min="0" max="100000" value="%d" class="mono">
+				</div>
+				<div>
+					<button type="submit" class="primary" style="padding:0.52rem 1rem;font-size:0.9rem;">Find Ready Commit</button>
+				</div>
+			</div>
+			<div class="checkboxes">
+				<label><input type="checkbox" id="f-require-pull" checked> Require prebuilt <code>guix pull</code> binary</label>
+				<label><input type="checkbox" id="f-allow-failed"> Allow failed builds in package mode</label>
+			</div>
+		</form>
+		<div id="finder-result"></div>
+	</div>
 `, defaultMaxPending)
 }
 
 func renderEvaluationsTable(ov systemOverview, escServerURL string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, `
-  <div class="panel">
-    <h2>Recent Master Evaluations</h2>
-    <p class="sub">Showing %d cached evaluations ordered from newest to oldest.</p>
+	<div class="panel">
+		<h2>Recent Master Evaluations</h2>
+		<p class="sub">Showing %d cached evaluations ordered from newest to oldest.</p>
 `, len(ov.Evaluations))
 
 	if len(ov.Evaluations) == 0 {
 		b.WriteString(`<p>No evaluations cached yet. Background sync is running...</p>`)
 	} else {
 		b.WriteString(`
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Eval</th>
-            <th>Commit</th>
-            <th>Date (Local)</th>
-            <th class="prog-cell">Build Progress</th>
-            <th>guix pull</th>
-            <th>Pending Sample</th>
-          </tr>
-        </thead>
-        <tbody>
+		<div class="table-wrap">
+			<table>
+				<thead>
+					<tr>
+						<th>Eval</th>
+						<th>Commit</th>
+						<th>Date (Local)</th>
+						<th class="prog-cell">Build Progress</th>
+						<th>guix pull</th>
+						<th>Pending Sample</th>
+					</tr>
+				</thead>
+				<tbody>
 `)
 		for idx, item := range ov.Evaluations {
 			short := shortCommit(item.Commit)
@@ -921,31 +921,31 @@ func renderEvaluationsTable(ov systemOverview, escServerURL string) string {
 			}
 
 			fmt.Fprintf(&b, `
-          <tr>
-            <td class="mono">
-              <a href="%s/eval/%d" target="_blank" rel="noopener"><strong>#%d</strong></a>
-              <div style="font-size:0.74rem;color:var(--muted);">lag: %d</div>
-            </td>
-            <td class="mono">
-              <a href="https://codeberg.org/guix/guix/commit/%s" target="_blank" rel="noopener">%s</a>
-              <button type="button" data-copy="%s" onclick="copyFromBtn(this)" style="padding:0.1rem 0.4rem;font-size:0.72rem;margin-left:0.3rem;">Copy</button>
-            </td>
-            %s
-            <td class="prog-cell">
-              <div class="prog-bar">
-                <div class="prog-ok" style="width:%.2f%%"></div>
-                <div class="prog-warn" style="width:%.2f%%"></div>
-                <div class="prog-err" style="width:%.2f%%"></div>
-              </div>
-              <div class="prog-legend mono">
-                <span style="color:var(--ok-text)">%d ok</span>
-                <span style="color:var(--warn-text)">%d pend</span>
-                <span style="color:var(--err-text)">%d fail</span>
-              </div>
-            </td>
-            <td>%s</td>
-            <td>%s</td>
-          </tr>`,
+					<tr>
+						<td class="mono">
+							<a href="%s/eval/%d" target="_blank" rel="noopener"><strong>#%d</strong></a>
+							<div style="font-size:0.74rem;color:var(--muted);">lag: %d</div>
+						</td>
+						<td class="mono">
+							<a href="https://codeberg.org/guix/guix/commit/%s" target="_blank" rel="noopener">%s</a>
+							<button type="button" data-copy="%s" onclick="copyFromBtn(this)" style="padding:0.1rem 0.4rem;font-size:0.72rem;margin-left:0.3rem;">Copy</button>
+						</td>
+						%s
+						<td class="prog-cell">
+							<div class="prog-bar">
+								<div class="prog-ok" style="width:%.2f%%"></div>
+								<div class="prog-warn" style="width:%.2f%%"></div>
+								<div class="prog-err" style="width:%.2f%%"></div>
+							</div>
+							<div class="prog-legend mono">
+								<span style="color:var(--ok-text)">%d ok</span>
+								<span style="color:var(--warn-text)">%d pend</span>
+								<span style="color:var(--err-text)">%d fail</span>
+							</div>
+						</td>
+						<td>%s</td>
+						<td>%s</td>
+					</tr>`,
 				escServerURL, item.EvaluationID, item.EvaluationID, idx,
 				html.EscapeString(item.Commit), html.EscapeString(short), html.EscapeString(item.Commit),
 				dateCell,
@@ -956,9 +956,9 @@ func renderEvaluationsTable(ov systemOverview, escServerURL string) string {
 			)
 		}
 		b.WriteString(`
-        </tbody>
-      </table>
-    </div>`)
+				</tbody>
+			</table>
+		</div>`)
 	}
 	b.WriteString(`</div>`)
 	return b.String()
@@ -975,14 +975,14 @@ func renderFooter(st dashboardState) string {
 	}
 
 	return fmt.Sprintf(`
-  <footer>
-    <div class="site-footer-element-left">
-      Substitutes tracked from <a href="%s" target="_blank" rel="noopener"><code>%s</code></a> &middot; Last sync: %s
-    </div>
-    <div class="site-footer-element-right">
-      <a href="https://github.com/whhone/guix-pull-ready" target="_blank" rel="noopener">Source Code</a>
-    </div>
-  </footer>
+	<footer>
+		<div class="site-footer-element-left">
+			Substitutes tracked from <a href="%s" target="_blank" rel="noopener"><code>%s</code></a> &middot; Last sync: %s
+		</div>
+		<div class="site-footer-element-right">
+			<a href="https://github.com/whhone/guix-pull-ready" target="_blank" rel="noopener">Source Code</a>
+		</div>
+	</footer>
 `, escServerURL, escServerURL, lastSyncHTML)
 }
 
@@ -994,117 +994,117 @@ func renderCommonScripts(includeFinder bool) string {
 formatLocalTimes();
 
 function copyFromBtn(btn) {
-  const text = btn.getAttribute("data-copy");
-  if (text) {
-    copyText(text, btn);
-  }
+	const text = btn.getAttribute("data-copy");
+	if (text) {
+		copyText(text, btn);
+	}
 }
 
 function copyText(text, btn) {
-  const orig = btn.textContent;
-  const markCopied = () => {
-    btn.textContent = "Copied!";
-    setTimeout(() => { btn.textContent = orig; }, 1400);
-  };
+	const orig = btn.textContent;
+	const markCopied = () => {
+		btn.textContent = "Copied!";
+		setTimeout(() => { btn.textContent = orig; }, 1400);
+	};
 
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(text).then(markCopied).catch(() => fallbackCopy(text, markCopied));
-  } else {
-    fallbackCopy(text, markCopied);
-  }
+	if (navigator.clipboard && navigator.clipboard.writeText) {
+		navigator.clipboard.writeText(text).then(markCopied).catch(() => fallbackCopy(text, markCopied));
+	} else {
+		fallbackCopy(text, markCopied);
+	}
 }
 
 function fallbackCopy(text, onDone) {
-  const ta = document.createElement("textarea");
-  ta.value = text;
-  ta.style.position = "fixed";
-  ta.style.opacity = "0";
-  document.body.appendChild(ta);
-  ta.focus();
-  ta.select();
-  try {
-    if (document.execCommand("copy")) {
-      onDone();
-    }
-  } finally {
-    document.body.removeChild(ta);
-  }
+	const ta = document.createElement("textarea");
+	ta.value = text;
+	ta.style.position = "fixed";
+	ta.style.opacity = "0";
+	document.body.appendChild(ta);
+	ta.focus();
+	ta.select();
+	try {
+		if (document.execCommand("copy")) {
+			onDone();
+		}
+	} finally {
+		document.body.removeChild(ta);
+	}
 }
 
 function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
+	return String(s)
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;")
+		.replace(/'/g, "&#39;");
 }
 `)
 
 	if includeFinder {
 		b.WriteString(`
 async function runFinder(ev) {
-  ev.preventDefault();
-  const out = document.getElementById("finder-result");
-  out.style.display = "block";
-  out.innerHTML = '<span class="badge badge-warn">Resolving...</span>';
+	ev.preventDefault();
+	const out = document.getElementById("finder-result");
+	out.style.display = "block";
+	out.innerHTML = '<span class="badge badge-warn">Resolving...</span>';
 
-  const pkgs = document.getElementById("f-pkgs").value.trim();
-  const maxPending = document.getElementById("f-max-pending").value || "0";
-  const reqPull = document.getElementById("f-require-pull").checked;
-  const allowFailed = document.getElementById("f-allow-failed").checked;
+	const pkgs = document.getElementById("f-pkgs").value.trim();
+	const maxPending = document.getElementById("f-max-pending").value || "0";
+	const reqPull = document.getElementById("f-require-pull").checked;
+	const allowFailed = document.getElementById("f-allow-failed").checked;
 
-  const params = new URLSearchParams();
-  params.set("system", "x86_64-linux");
-  if (pkgs) {
-    params.set("pkgs", pkgs);
-  } else {
-    params.set("max_pending", maxPending);
-  }
-  if (!reqPull) params.set("require_pull", "false");
-  if (allowFailed) params.set("allow_failed", "true");
+	const params = new URLSearchParams();
+	params.set("system", "x86_64-linux");
+	if (pkgs) {
+		params.set("pkgs", pkgs);
+	} else {
+		params.set("max_pending", maxPending);
+	}
+	if (!reqPull) params.set("require_pull", "false");
+	if (allowFailed) params.set("allow_failed", "true");
 
-  try {
-    const [statusResp, scmResp] = await Promise.all([
-      fetch("/status?" + params.toString(), {
-        headers: { "Accept": "application/json" }
-      }),
-      fetch("/channels.scm?" + params.toString())
-    ]);
-    const data = await statusResp.json();
-    if (!statusResp.ok) {
-      out.innerHTML = '<div class="badge badge-err">Error: ' + escapeHtml(data.error || statusResp.statusText) + '</div>';
-      return;
-    }
-    const scmText = await scmResp.text();
-    let untrackedHtml = "";
-    if (data.untracked_packages && data.untracked_packages.length > 0) {
-      untrackedHtml = '<div style="margin-top:0.4rem;font-size:0.82rem;color:var(--warn-text);">Skipped untracked/local packages: <code>' +
-        escapeHtml(data.untracked_packages.join(", ")) + '</code></div>';
-    }
-    const channelsQueryUrl = window.location.origin + "/channels.scm?" + params.toString();
-    const downloadedChannelsExpr = '(downloaded-channels\n  "' + channelsQueryUrl + '")';
-    out.innerHTML =
-      '<div style="padding:0.85rem;background:var(--code-bg);border:1px solid var(--border);border-radius:6px;">' +
-        '<div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:0.5rem;">' +
-          '<div><strong>Resolved Commit:</strong> <code class="mono">' + escapeHtml(data.commit) + '</code> ' +
-          '<span class="badge badge-ok">Eval #' + data.evaluation_id + ' (' + data.evaluations_behind + ' behind)</span></div>' +
-          '<div class="btn-row">' +
-            '<button type="button" data-copy="' + escapeHtml(data.commit) + '" onclick="copyFromBtn(this)">Copy Commit</button>' +
-            '<button type="button" data-copy="guix pull --commit=' + escapeHtml(data.commit) + '" onclick="copyFromBtn(this)">Copy guix pull</button>' +
-            '<button type="button" data-copy="' + escapeHtml(scmText) + '" onclick="copyFromBtn(this)">Copy channels.scm</button>' +
-          '</div>' +
-        '</div>' +
-        untrackedHtml +
-        '<pre class="code-box" style="background:var(--bg);">' + escapeHtml(scmText) + '</pre>' +
-        '<div style="margin-top:0.6rem;font-size:0.85rem;">' +
-          '<div style="margin-bottom:0.25rem;color:var(--text-muted);">Or track automatically in <code>~/.config/guix/channels.scm</code> via <code>downloaded-channels</code>:</div>' +
-          '<pre class="code-box" style="background:var(--bg);">' + escapeHtml(downloadedChannelsExpr) + '</pre>' +
-        '</div>' +
-      '</div>';
-  } catch (err) {
-    out.innerHTML = '<div class="badge badge-err">Request failed: ' + escapeHtml(String(err)) + '</div>';
-  }
+	try {
+		const [statusResp, scmResp] = await Promise.all([
+			fetch("/status?" + params.toString(), {
+				headers: { "Accept": "application/json" }
+			}),
+			fetch("/channels.scm?" + params.toString())
+		]);
+		const data = await statusResp.json();
+		if (!statusResp.ok) {
+			out.innerHTML = '<div class="badge badge-err">Error: ' + escapeHtml(data.error || statusResp.statusText) + '</div>';
+			return;
+		}
+		const scmText = await scmResp.text();
+		let untrackedHtml = "";
+		if (data.untracked_packages && data.untracked_packages.length > 0) {
+			untrackedHtml = '<div style="margin-top:0.4rem;font-size:0.82rem;color:var(--warn-text);">Skipped untracked/local packages: <code>' +
+				escapeHtml(data.untracked_packages.join(", ")) + '</code></div>';
+		}
+		const channelsQueryUrl = window.location.origin + "/channels.scm?" + params.toString();
+		const downloadedChannelsExpr = '(downloaded-channels\n  "' + channelsQueryUrl + '")';
+		out.innerHTML =
+			'<div style="padding:0.85rem;background:var(--code-bg);border:1px solid var(--border);border-radius:6px;">' +
+				'<div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:0.5rem;">' +
+					'<div><strong>Resolved Commit:</strong> <code class="mono">' + escapeHtml(data.commit) + '</code> ' +
+					'<span class="badge badge-ok">Eval #' + data.evaluation_id + ' (' + data.evaluations_behind + ' behind)</span></div>' +
+					'<div class="btn-row">' +
+						'<button type="button" data-copy="' + escapeHtml(data.commit) + '" onclick="copyFromBtn(this)">Copy Commit</button>' +
+						'<button type="button" data-copy="guix pull --commit=' + escapeHtml(data.commit) + '" onclick="copyFromBtn(this)">Copy guix pull</button>' +
+						'<button type="button" data-copy="' + escapeHtml(scmText) + '" onclick="copyFromBtn(this)">Copy channels.scm</button>' +
+					'</div>' +
+				'</div>' +
+				untrackedHtml +
+				'<pre class="code-box" style="background:var(--bg);">' + escapeHtml(scmText) + '</pre>' +
+				'<div style="margin-top:0.6rem;font-size:0.85rem;">' +
+					'<div style="margin-bottom:0.25rem;color:var(--text-muted);">Or track automatically in <code>~/.config/guix/channels.scm</code> via <code>downloaded-channels</code>:</div>' +
+					'<pre class="code-box" style="background:var(--bg);">' + escapeHtml(downloadedChannelsExpr) + '</pre>' +
+				'</div>' +
+			'</div>';
+	} catch (err) {
+		out.innerHTML = '<div class="badge badge-err">Request failed: ' + escapeHtml(String(err)) + '</div>';
+	}
 }
 `)
 	}
