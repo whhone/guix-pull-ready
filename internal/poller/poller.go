@@ -14,13 +14,22 @@ import (
 	"guix-evaluated/internal/store"
 )
 
+// ChannelConfig configures an additional channel Cuirass jobset (such as nonguix)
+// to poll alongside the primary Guix instance.
+type ChannelConfig struct {
+	Name   string          // Channel name (e.g. "nonguix")
+	Spec   string          // Cuirass specification/jobset name (e.g. "nonguix")
+	Client *cuirass.Client // Cuirass API client for this channel's build farm
+}
+
 // Config holds configuration for the background Cuirass poller.
 type Config struct {
-	Systems          []string
-	Limit            int
-	PollInterval     time.Duration
-	MaxActiveRefresh int
-	Logger           *slog.Logger
+	Systems            []string
+	Limit              int
+	PollInterval       time.Duration
+	MaxActiveRefresh   int
+	AdditionalChannels []ChannelConfig
+	Logger             *slog.Logger
 }
 
 // Poller periodically synchronizes evaluations and job statuses from Cuirass into the local Store.
@@ -29,12 +38,13 @@ type Poller struct {
 	store  *store.Store
 	cfg    Config
 
-	mu             sync.RWMutex
-	lastPollErr    error
-	lastPollEnd    time.Time
-	syncing        bool
-	refreshedCycle map[store.EvalSystemKey]uint64
-	cycleCounter   uint64
+	mu                    sync.RWMutex
+	lastPollErr           error
+	lastPollEnd           time.Time
+	syncing               bool
+	refreshedCycle        map[store.EvalSystemKey]uint64
+	channelRefreshedCycle map[store.ChannelEvalSystemKey]uint64
+	cycleCounter          uint64
 }
 
 // New creates a new background Poller.
@@ -51,11 +61,19 @@ func New(client *cuirass.Client, st *store.Store, cfg Config) *Poller {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
+	if st != nil {
+		for _, ch := range cfg.AdditionalChannels {
+			if ch.Name != "" && ch.Client != nil {
+				st.SetChannelServerURL(ch.Name, ch.Client.BaseURL())
+			}
+		}
+	}
 	return &Poller{
-		client:         client,
-		store:          st,
-		cfg:            cfg,
-		refreshedCycle: make(map[store.EvalSystemKey]uint64),
+		client:                client,
+		store:                 st,
+		cfg:                   cfg,
+		refreshedCycle:        make(map[store.EvalSystemKey]uint64),
+		channelRefreshedCycle: make(map[store.ChannelEvalSystemKey]uint64),
 	}
 }
 
@@ -120,31 +138,74 @@ func (p *Poller) SyncOnce(ctx context.Context) error {
 //     the final state to disk once at the end of the cycle.
 func (p *Poller) syncEvaluations(ctx context.Context) error {
 	log := p.cfg.Logger
+
+	p.mu.Lock()
+	p.cycleCounter++
+	cycle := p.cycleCounter
+	p.mu.Unlock()
+
+	var updatedCount int
+
+	// 1. Poll any configured additional channels (such as nonguix) first so we know
+	// which base Guix commits they reference in their checkouts.
+	for _, ch := range p.cfg.AdditionalChannels {
+		if ch.Name == "" || ch.Client == nil {
+			continue
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		nUpdated := p.syncAdditionalChannel(ctx, ch, cycle)
+		updatedCount += nUpdated
+	}
+
+	referencedGuixCommits := make(map[string]bool)
+	if snap := p.store.Snapshot(); snap != nil {
+		for _, chEvals := range snap.ChannelEvaluations {
+			for _, ev := range chEvals {
+				if c := ev.Checkouts["guix"]; c != "" {
+					referencedGuixCommits[c] = true
+				}
+			}
+		}
+	}
+
+	masterFetchLimit := p.cfg.Limit
+	if len(referencedGuixCommits) > 0 && masterFetchLimit < 100 {
+		masterFetchLimit = 100
+	}
+
 	log.Info("polling Cuirass master evaluations",
 		"server", p.client.BaseURL(),
 		"limit", p.cfg.Limit,
 		"systems", p.cfg.Systems,
 	)
 
-	masterEvals, err := p.client.LatestEvaluations(ctx, "master", p.cfg.Limit)
+	masterEvals, err := p.client.LatestEvaluations(ctx, "master", masterFetchLimit)
 	if err != nil {
 		log.Error("failed to fetch master evaluations", "err", err)
 		return err
 	}
 
-	records := make([]store.EvaluationRecord, 0, len(masterEvals))
-	for _, ev := range masterEvals {
-		records = append(records, store.EvaluationRecord{
-			ID:        ev.ID,
-			Commit:    ev.PrimaryCommit(),
-			Timestamp: ev.StartTime(),
-		})
+	records := make([]store.EvaluationRecord, 0, p.cfg.Limit+len(referencedGuixCommits))
+	for idx, ev := range masterEvals {
+		commit := ev.PrimaryCommit()
+		if idx < p.cfg.Limit || referencedGuixCommits[commit] {
+			records = append(records, store.EvaluationRecord{
+				ID:        ev.ID,
+				Channel:   "guix",
+				Commit:    commit,
+				Checkouts: ev.CheckoutsMap(),
+				Timestamp: ev.StartTime(),
+			})
+		}
 	}
 	p.store.UpdateEvaluations(records, p.cfg.Limit*2)
+	if snap := p.store.Snapshot(); snap != nil && len(snap.Evaluations) > len(records) {
+		records = snap.Evaluations
+	}
 
 	p.mu.Lock()
-	p.cycleCounter++
-	cycle := p.cycleCounter
 	// Prune cycle tracking entries for evaluations that have aged out of the window.
 	activeKeys := make(map[store.EvalSystemKey]bool, len(records)*len(p.cfg.Systems))
 	for _, ev := range records {
@@ -160,8 +221,12 @@ func (p *Poller) syncEvaluations(ctx context.Context) error {
 	p.mu.Unlock()
 
 	// Fetch recent "guix" jobset evaluations to match commits for `guix pull` substitute status.
+	guixPullLimit := p.cfg.Limit * 2
+	if masterFetchLimit*2 > guixPullLimit {
+		guixPullLimit = masterFetchLimit * 2
+	}
 	guixEvalByCommit := make(map[string]int64)
-	if guixEvals, err := p.client.LatestEvaluations(ctx, "guix", p.cfg.Limit*2); err == nil {
+	if guixEvals, err := p.client.LatestEvaluations(ctx, "guix", guixPullLimit); err == nil {
 		for _, gev := range guixEvals {
 			commit := gev.PrimaryCommit()
 			if commit != "" && commit != "unknown" {
@@ -174,8 +239,6 @@ func (p *Poller) syncEvaluations(ctx context.Context) error {
 	} else {
 		log.Warn("failed to fetch guix jobset evaluations", "err", err)
 	}
-
-	var updatedCount int
 
 	for _, sys := range p.cfg.Systems {
 		// Update guix pull status for evaluations in the window that are not yet ready.
@@ -302,6 +365,141 @@ func (p *Poller) syncEvaluations(ctx context.Context) error {
 	return nil
 }
 
+// syncAdditionalChannel polls evaluations and job statuses for an additional channel
+// (such as nonguix). Errors are logged as warnings so primary Guix polling is unaffected.
+func (p *Poller) syncAdditionalChannel(ctx context.Context, ch ChannelConfig, cycle uint64) int {
+	log := p.cfg.Logger
+	spec := ch.Spec
+	if spec == "" {
+		spec = ch.Name
+	}
+
+	log.Info("polling additional channel evaluations",
+		"channel", ch.Name,
+		"server", ch.Client.BaseURL(),
+		"spec", spec,
+		"limit", p.cfg.Limit,
+	)
+
+	evals, err := ch.Client.LatestEvaluations(ctx, spec, p.cfg.Limit)
+	if err != nil {
+		log.Warn("failed to fetch additional channel evaluations",
+			"channel", ch.Name,
+			"server", ch.Client.BaseURL(),
+			"err", err,
+		)
+		return 0
+	}
+
+	records := make([]store.EvaluationRecord, 0, len(evals))
+	for _, ev := range evals {
+		commit := ev.CheckoutCommit(ch.Name)
+		if commit == "" {
+			commit = ev.PrimaryCommit()
+		}
+		records = append(records, store.EvaluationRecord{
+			ID:        ev.ID,
+			Channel:   ch.Name,
+			Commit:    commit,
+			Checkouts: ev.CheckoutsMap(),
+			Timestamp: ev.StartTime(),
+		})
+	}
+	p.store.UpdateChannelEvaluations(ch.Name, records, p.cfg.Limit*2)
+	p.store.PublishSnapshot()
+
+	p.mu.Lock()
+	activeKeys := make(map[store.ChannelEvalSystemKey]bool, len(records)*len(p.cfg.Systems))
+	for _, ev := range records {
+		for _, sys := range p.cfg.Systems {
+			activeKeys[store.ChannelEvalSystemKey{Channel: ch.Name, EvalID: ev.ID, System: sys}] = true
+		}
+	}
+	for k := range p.channelRefreshedCycle {
+		if k.Channel == ch.Name && !activeKeys[k] {
+			delete(p.channelRefreshedCycle, k)
+		}
+	}
+	p.mu.Unlock()
+
+	var updatedCount int
+	for _, sys := range p.cfg.Systems {
+		var uncachedEvals []store.EvaluationRecord
+		var incompleteEvals []store.EvaluationRecord
+
+		for _, ev := range records {
+			if p.store.IsChannelEvalSystemComplete(ch.Name, ev.ID, sys) {
+				continue
+			}
+			if !p.store.HasChannelEvalSystem(ch.Name, ev.ID, sys) {
+				uncachedEvals = append(uncachedEvals, ev)
+			} else {
+				incompleteEvals = append(incompleteEvals, ev)
+			}
+		}
+
+		var toRefreshIncomplete []store.EvaluationRecord
+		if p.cfg.MaxActiveRefresh <= 0 || len(incompleteEvals) <= p.cfg.MaxActiveRefresh {
+			toRefreshIncomplete = incompleteEvals
+		} else {
+			snap := p.store.Snapshot()
+			p.mu.RLock()
+			sortedIncomplete := append([]store.EvaluationRecord(nil), incompleteEvals...)
+			sort.Slice(sortedIncomplete, func(i, j int) bool {
+				keyI := store.ChannelEvalSystemKey{Channel: ch.Name, EvalID: sortedIncomplete[i].ID, System: sys}
+				keyJ := store.ChannelEvalSystemKey{Channel: ch.Name, EvalID: sortedIncomplete[j].ID, System: sys}
+				cycleI := p.channelRefreshedCycle[keyI]
+				cycleJ := p.channelRefreshedCycle[keyJ]
+				if cycleI != cycleJ {
+					return cycleI < cycleJ
+				}
+				var pendingI, pendingJ int
+				if snap != nil {
+					if dataI, ok := snap.ByChannelEvalSystem[keyI]; ok {
+						pendingI = dataI.PendingJobs
+					}
+					if dataJ, ok := snap.ByChannelEvalSystem[keyJ]; ok {
+						pendingJ = dataJ.PendingJobs
+					}
+				}
+				if pendingI != pendingJ {
+					return pendingI < pendingJ
+				}
+				return sortedIncomplete[i].ID > sortedIncomplete[j].ID
+			})
+			p.mu.RUnlock()
+			toRefreshIncomplete = sortedIncomplete[:p.cfg.MaxActiveRefresh]
+		}
+
+		evalsToFetch := append(uncachedEvals, toRefreshIncomplete...)
+		for _, ev := range evalsToFetch {
+			if ctx.Err() != nil {
+				return updatedCount
+			}
+			jobs, err := ch.Client.EvaluationJobs(ctx, ev.ID, sys)
+			if err != nil {
+				log.Warn("failed to fetch channel evaluation jobs",
+					"channel", ch.Name,
+					"eval_id", ev.ID,
+					"system", sys,
+					"err", err,
+				)
+				continue
+			}
+
+			p.mu.Lock()
+			p.channelRefreshedCycle[store.ChannelEvalSystemKey{Channel: ch.Name, EvalID: ev.ID, System: sys}] = cycle
+			p.mu.Unlock()
+
+			p.store.UpsertChannelSystemEval(ch.Name, ev.ID, ev.Commit, sys, jobs)
+			updatedCount++
+			p.store.PublishSnapshot()
+		}
+	}
+
+	return updatedCount
+}
+
 // checkGuixPullReady returns true if the "guix" jobset evaluation for a commit
 // has at least one job for system and all jobs for system succeeded.
 func (p *Poller) checkGuixPullReady(ctx context.Context, pullEvalID int64, system string) bool {
@@ -332,7 +530,7 @@ func (p *Poller) checkGuixPullReady(ctx context.Context, pullEvalID int64, syste
 //     versions succeeded also skip /build/<id> lookups, because the latest version is
 //     guaranteed to have succeeded too.
 //   - Resolved build ID -> nixname mappings are permanently cached in the Store across restarts.
-func (p *Poller) ResolveMissingVersions(ctx context.Context, system string, specs []string) {
+func (p *Poller) ResolveMissingVersions(ctx context.Context, system string, specs []string, additionalChannels ...string) {
 	if len(specs) == 0 {
 		return
 	}
@@ -341,11 +539,58 @@ func (p *Poller) ResolveMissingVersions(ctx context.Context, system string, spec
 		return
 	}
 
-	// Collect unique build IDs across candidate evaluations that need resolution.
+	var anyUpdated bool
+	if p.resolveChannelMissingVersions(ctx, "guix", p.client, snap.Evaluations, func(evalID int64) *store.SystemEvalData {
+		return snap.ByEvalSystem[store.EvalSystemKey{EvalID: evalID, System: system}]
+	}, specs) {
+		anyUpdated = true
+	}
+
+	if len(additionalChannels) > 0 {
+		chClients := make(map[string]*cuirass.Client, len(p.cfg.AdditionalChannels))
+		for _, ch := range p.cfg.AdditionalChannels {
+			if ch.Name != "" && ch.Client != nil {
+				chClients[ch.Name] = ch.Client
+			}
+		}
+		for _, chName := range additionalChannels {
+			client := chClients[chName]
+			if client == nil {
+				continue
+			}
+			evals := snap.ChannelEvaluations[chName]
+			if len(evals) == 0 {
+				continue
+			}
+			if p.resolveChannelMissingVersions(ctx, chName, client, evals, func(evalID int64) *store.SystemEvalData {
+				return snap.ByChannelEvalSystem[store.ChannelEvalSystemKey{Channel: chName, EvalID: evalID, System: system}]
+			}, specs) {
+				anyUpdated = true
+			}
+		}
+	}
+
+	if anyUpdated {
+		_ = p.store.Save()
+	}
+}
+
+func (p *Poller) resolveChannelMissingVersions(
+	ctx context.Context,
+	channel string,
+	client *cuirass.Client,
+	evals []store.EvaluationRecord,
+	getData func(evalID int64) *store.SystemEvalData,
+	specs []string,
+) bool {
+	if client == nil || len(evals) == 0 {
+		return false
+	}
+
 	buildBaseMap := make(map[int64]string)
-	for _, ev := range snap.Evaluations {
-		data, ok := snap.ByEvalSystem[store.EvalSystemKey{EvalID: ev.ID, System: system}]
-		if !ok || data.JobsByBase == nil {
+	for _, ev := range evals {
+		data := getData(ev.ID)
+		if data == nil || data.JobsByBase == nil {
 			continue
 		}
 		for _, spec := range specs {
@@ -369,7 +614,7 @@ func (p *Poller) ResolveMissingVersions(ctx context.Context, system string, spec
 				if j.BuildID <= 0 {
 					continue
 				}
-				if _, ok := p.store.GetBuildNixName(j.BuildID); !ok {
+				if _, ok := p.store.GetChannelBuildNixName(channel, j.BuildID); !ok {
 					buildBaseMap[j.BuildID] = basePkg
 				}
 			}
@@ -377,7 +622,7 @@ func (p *Poller) ResolveMissingVersions(ctx context.Context, system string, spec
 	}
 
 	if len(buildBaseMap) == 0 {
-		return
+		return false
 	}
 
 	type buildResult struct {
@@ -399,7 +644,7 @@ func (p *Poller) ResolveMissingVersions(ctx context.Context, system string, spec
 				return
 			}
 
-			b, err := p.client.Build(ctx, id)
+			b, err := client.Build(ctx, id)
 			if err != nil {
 				return
 			}
@@ -419,7 +664,8 @@ func (p *Poller) ResolveMissingVersions(ctx context.Context, system string, spec
 	}
 
 	if len(newNixes) > 0 {
-		p.store.SetBuildNixNames(newNixes)
-		_ = p.store.Save()
+		p.store.SetChannelBuildNixNames(channel, newNixes)
+		return true
 	}
+	return false
 }

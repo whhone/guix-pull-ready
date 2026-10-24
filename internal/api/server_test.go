@@ -172,8 +172,8 @@ func TestDashboardHTMLAndPlainIndex(t *testing.T) {
 		"Latest Commit with All Prebuilts Ready on Substitutes",
 		"Usages",
 		`<a href="/status">Status</a>`,
-		`<pre class="mono">guix pull --commit=ffff6666eeee7777dddd8888cccc9999bbbb0000</pre>`,
-		`data-copy="guix pull --commit=ffff6666eeee7777dddd8888cccc9999bbbb0000" onclick="copyFromBtn(this)"`,
+		`<pre class="mono">guix pull -C &lt;(curl -fsSL "http://example.com/channels.scm")</pre>`,
+		`data-copy="guix pull -C &lt;(curl -fsSL &quot;http://example.com/channels.scm&quot;)" onclick="copyFromBtn(this)"`,
 		`data-copy="ffff6666eeee7777dddd8888cccc9999bbbb0000" onclick="copyFromBtn(this)">Copy Commit</button>`,
 		"Track automatically via ~/.config/guix/channels.scm:",
 		"(downloaded-channels",
@@ -346,5 +346,154 @@ func TestRequirePullDefaultsAndOverrides(t *testing.T) {
 	}
 	if got := strings.TrimSpace(rec.Body.String()); got != "8888111122223333444455556666777788889999" {
 		t.Fatalf("got commit %q, want eval 801 commit (88881111...)", got)
+	}
+}
+
+func TestAdditionalChannelsNonguixAPI(t *testing.T) {
+	st, err := store.Open(":memory:", "https://ci.guix.gnu.org", []string{"x86_64-linux"})
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	st.SetChannelServerURL("nonguix", "https://cuirass.nonguix.org")
+
+	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
+	st.UpdateEvaluations([]store.EvaluationRecord{
+		{ID: 700, Commit: "aaaa1111bbbb2222cccc3333dddd4444eeee5555", Timestamp: now},
+		{ID: 699, Commit: "ffff6666eeee7777dddd8888cccc9999bbbb0000", Timestamp: now.Add(-time.Hour)},
+	}, 40)
+
+	// Eval 700 has 1 pending build (libreoffice)
+	st.SetPullStatus("aaaa1111bbbb2222cccc3333dddd4444eeee5555", "x86_64-linux", 1700, true)
+	st.UpsertSystemEval(700, "aaaa1111bbbb2222cccc3333dddd4444eeee5555", "x86_64-linux", []cuirass.Job{
+		{BuildID: 1, Name: "emacs.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "29.4"},
+		{BuildID: 2, Name: "libreoffice.x86_64-linux", Status: cuirass.StatusScheduled, Version: "24.8"},
+	})
+
+	// Eval 699 has 0 pending builds
+	st.SetPullStatus("ffff6666eeee7777dddd8888cccc9999bbbb0000", "x86_64-linux", 1699, true)
+	st.UpsertSystemEval(699, "ffff6666eeee7777dddd8888cccc9999bbbb0000", "x86_64-linux", []cuirass.Job{
+		{BuildID: 10, Name: "emacs.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "29.4"},
+		{BuildID: 11, Name: "libreoffice.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "24.8"},
+	})
+
+	st.UpdateChannelEvaluations("nonguix", []store.EvaluationRecord{
+		{
+			ID:      55,
+			Channel: "nonguix",
+			Commit:  "ng55111122223333444455556666777788889999",
+			Checkouts: map[string]string{
+				"nonguix": "ng55111122223333444455556666777788889999",
+				"guix":    "aaaa1111bbbb2222cccc3333dddd4444eeee5555",
+			},
+			Timestamp: now,
+		},
+		{
+			ID:      54,
+			Channel: "nonguix",
+			Commit:  "ng54111122223333444455556666777788889999",
+			Checkouts: map[string]string{
+				"nonguix": "ng54111122223333444455556666777788889999",
+				"guix":    "ffff6666eeee7777dddd8888cccc9999bbbb0000",
+			},
+			Timestamp: now.Add(-time.Hour),
+		},
+	}, 40)
+
+	st.UpsertChannelSystemEval("nonguix", 55, "ng55111122223333444455556666777788889999", "x86_64-linux", []cuirass.Job{
+		{BuildID: 901, Name: "linux.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "6.12.1"},
+	})
+	st.UpsertChannelSystemEval("nonguix", 54, "ng54111122223333444455556666777788889999", "x86_64-linux", []cuirass.Job{
+		{BuildID: 902, Name: "linux.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "6.12.1"},
+	})
+
+	_ = st.Save()
+	srv := NewServer(st, nil, nil)
+
+	// 1. GET /commit?additional_channels=nonguix (whole-eval mode -> picks Guix 699 + Nonguix 54)
+	req := httptest.NewRequest(http.MethodGet, "/commit?additional_channels=nonguix", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := strings.TrimSpace(rec.Body.String()); got != "ffff6666eeee7777dddd8888cccc9999bbbb0000" {
+		t.Fatalf("got commit %q, want ffff6666...", got)
+	}
+
+	// 2. GET /channels.scm?additional_channels=nonguix&pkgs=emacs,linux (package mode -> picks Guix 700 + Nonguix 55)
+	req = httptest.NewRequest(http.MethodGet, "/channels.scm?additional_channels=nonguix&pkgs=emacs,linux", nil)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	scm := rec.Body.String()
+	if !strings.Contains(scm, `(name 'nonguix)`) ||
+		!strings.Contains(scm, `(commit "ng55111122223333444455556666777788889999")`) ||
+		!strings.Contains(scm, `(commit "aaaa1111bbbb2222cccc3333dddd4444eeee5555")`) {
+		t.Fatalf("channels.scm missing expected nonguix + guix commits:\n%s", scm)
+	}
+
+	// 3. GET /status?additional_channels=nonguix -> returns JSON with additional_channels
+	req = httptest.NewRequest(http.MethodGet, "/status?additional_channels=nonguix", nil)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var statusRes resolver.Result
+	if err := json.Unmarshal(rec.Body.Bytes(), &statusRes); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if len(statusRes.AdditionalChannels) != 1 || statusRes.AdditionalChannels[0].Channel != "nonguix" || statusRes.AdditionalChannels[0].EvaluationID != 54 {
+		t.Fatalf("unexpected additional_channels in /status response: %+v", statusRes.AdditionalChannels)
+	}
+
+	// 4. Browser GET /?additional_channels=nonguix and GET /status?additional_channels=nonguix -> pre-checks nonguix toggle
+	req = httptest.NewRequest(http.MethodGet, "/?additional_channels=nonguix", nil)
+	req.Header.Set("Accept", "text/html")
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	homeHTML := rec.Body.String()
+	if !strings.Contains(homeHTML, `id="main-nonguix-toggle" checked`) ||
+		!strings.Contains(homeHTML, `<div id="main-commit-guix" style="display:none;">`) ||
+		!strings.Contains(homeHTML, `<div id="main-commit-nonguix">`) {
+		t.Fatalf("home HTML with ?additional_channels=nonguix did not pre-select nonguix state")
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/status", nil)
+	req.Header.Set("Accept", "text/html")
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if !strings.Contains(rec.Body.String(), `<th class="col-nonguix" style="display:none;">nonguix</th>`) {
+		t.Fatalf("status HTML without additional_channels should hide nonguix column by default")
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/status?additional_channels=nonguix", nil)
+	req.Header.Set("Accept", "text/html")
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	statusHTML := rec.Body.String()
+	if !strings.Contains(statusHTML, `id="f-additional-nonguix" checked`) ||
+		!strings.Contains(statusHTML, `<div id="status-commit-guix" style="display:none;">`) ||
+		!strings.Contains(statusHTML, `<div id="status-commit-nonguix">`) ||
+		!strings.Contains(statusHTML, `<th class="col-nonguix">nonguix</th>`) ||
+		!strings.Contains(statusHTML, `https://cuirass.nonguix.org/eval/55`) ||
+		!strings.Contains(statusHTML, `Ready (#55)`) {
+		t.Fatalf("status HTML with ?additional_channels=nonguix did not render expected nonguix state/column")
+	}
+
+	// 5. GET /commit?additional_channels=invalid -> 400 Bad Request
+	req = httptest.NewRequest(http.MethodGet, "/commit?additional_channels=invalid", nil)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
 	}
 }

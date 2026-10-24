@@ -95,14 +95,37 @@ type Evaluation struct {
 	Checkouts    []Checkout `json:"checkouts"`
 }
 
+// CheckoutCommit returns the Git commit hash for the specified channel name
+// (e.g. "guix" or "nonguix"), or "" if not present in Checkouts.
+func (e Evaluation) CheckoutCommit(channel string) string {
+	for _, co := range e.Checkouts {
+		if co.Channel == channel && co.Commit != "" {
+			return co.Commit
+		}
+	}
+	return ""
+}
+
+// CheckoutsMap returns a map of channel name to commit hash for all checkouts in the evaluation.
+func (e Evaluation) CheckoutsMap() map[string]string {
+	if len(e.Checkouts) == 0 {
+		return nil
+	}
+	m := make(map[string]string, len(e.Checkouts))
+	for _, co := range e.Checkouts {
+		if co.Channel != "" && co.Commit != "" {
+			m[co.Channel] = co.Commit
+		}
+	}
+	return m
+}
+
 // PrimaryCommit returns the Guix Git commit hash for the evaluation.
 // It prefers the checkout explicitly labeled with channel "guix", falling back
 // to the first checkout in the evaluation if channel names are omitted.
 func (e Evaluation) PrimaryCommit() string {
-	for _, co := range e.Checkouts {
-		if co.Channel == "guix" && co.Commit != "" {
-			return co.Commit
-		}
+	if c := e.CheckoutCommit("guix"); c != "" {
+		return c
 	}
 	if len(e.Checkouts) > 0 && e.Checkouts[0].Commit != "" {
 		return e.Checkouts[0].Commit

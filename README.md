@@ -21,7 +21,7 @@ Public instance: **https://guix-pull-ready.whhone.com**
 ### 1. Update Guix directly to the newest ready commit
 
 ```bash
-guix pull --commit=$(curl -fsSL https://guix-pull-ready.whhone.com/commit)
+guix pull -C <(curl -fsSL "https://guix-pull-ready.whhone.com/channels.scm")
 ```
 
 ### 2. Track automatically via channels.scm

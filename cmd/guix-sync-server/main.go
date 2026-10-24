@@ -27,6 +27,7 @@ func main() {
 		listenAddr       = flag.String("listen", envOr("GUIX_SYNC_LISTEN", ":8080"), "HTTP listen address")
 		dbPath           = flag.String("db-path", envOr("GUIX_SYNC_DB_PATH", "./guix-sync.db"), "Path to persistent database file (use :memory: for in-memory only)")
 		cuirassURL       = flag.String("cuirass-url", envOr("GUIX_SYNC_CUIRASS_URL", "https://ci.guix.gnu.org"), "Upstream Cuirass server URL")
+		nonguixURL       = flag.String("nonguix-url", "https://cuirass.nonguix.org", "Upstream Nonguix Cuirass server URL (pass \"\" to disable)")
 		systemsCSV       = flag.String("systems", envOr("GUIX_SYNC_SYSTEMS", "x86_64-linux,aarch64-linux"), "Comma-separated target systems to track")
 		limit            = flag.Int("limit", envIntOr("GUIX_SYNC_LIMIT", 40), "Number of recent master evaluations to track")
 		pollInterval     = flag.Duration("poll-interval", envDurationOr("GUIX_SYNC_POLL_INTERVAL", 10*time.Minute), "Background Cuirass polling interval")
@@ -55,12 +56,27 @@ func main() {
 		cuirass.WithRetry(3, 2*time.Second),
 	)
 
+	var additionalChannels []poller.ChannelConfig
+	if trimmedNg := strings.TrimSpace(*nonguixURL); trimmedNg != "" {
+		ngClient := cuirass.NewClient(
+			trimmedNg,
+			cuirass.WithConcurrency(*concurrency),
+			cuirass.WithRetry(3, 2*time.Second),
+		)
+		additionalChannels = append(additionalChannels, poller.ChannelConfig{
+			Name:   "nonguix",
+			Spec:   "nonguix",
+			Client: ngClient,
+		})
+	}
+
 	bgPoller := poller.New(client, st, poller.Config{
-		Systems:          systems,
-		Limit:            *limit,
-		PollInterval:     *pollInterval,
-		MaxActiveRefresh: *maxActiveRefresh,
-		Logger:           logger,
+		Systems:            systems,
+		Limit:              *limit,
+		PollInterval:       *pollInterval,
+		MaxActiveRefresh:   *maxActiveRefresh,
+		AdditionalChannels: additionalChannels,
+		Logger:             logger,
 	})
 
 	apiSrv := api.NewServer(st, bgPoller, logger)

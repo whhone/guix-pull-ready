@@ -102,6 +102,7 @@ The service listens on `:8080` by default. All endpoints support both GET query 
 | `max_pending` | `0` | Whole-evaluation mode: maximum acceptable pending builds |
 | `require_pull` | `true` | Require prebuilt binary for `guix pull` (succeeded `guix` jobset build) |
 | `pkgs` | *(none)* | Comma-separated or space-separated package specs (e.g. `emacs,git,gcc-toolchain@14`) |
+| `additional_channels` | *(none)* | Comma-separated additional channels to coordinate with Guix (e.g. `nonguix`) |
 | `allow_failed` | `false` | Package mode: allow failed builds (only pending builds block) |
 | `limit` | `40` | Number of recent master evaluations to scan (max 100) |
 
@@ -114,9 +115,6 @@ Returns raw 40-character Git commit hash followed by a newline (`text/plain`). I
 # Get latest ready commit for current architecture (whole-evaluation mode)
 curl -fsSL "http://localhost:8080/commit"
 
-# Pull latest ready commit directly
-guix pull --commit=$(curl -fsSL "http://localhost:8080/commit?system=x86_64-linux")
-
 # Package mode: find commit where emacs, git, and gcc-toolchain 14 are ready
 curl -fsSL "http://localhost:8080/commit?pkgs=emacs,git,gcc-toolchain@14"
 
@@ -125,9 +123,15 @@ guix package --list-installed | cut -f1 | curl -fsSL --data-binary @- "http://lo
 ```
 
 #### 2. Channel Specification (`GET /channels.scm`)
-Returns a Scheme snippet (`text/x-scheme`) with evaluation metadata in comments, ready for `downloaded-channels`, `~/.config/guix/channels.scm`, or `guix time-machine`.
+Returns a Scheme snippet (`text/x-scheme`) with evaluation metadata in comments, ready for `guix pull -C`, `downloaded-channels`, `~/.config/guix/channels.scm`, or `guix time-machine`.
 
 ```bash
+# Pull latest ready commit directly
+guix pull -C <(curl -fsSL "http://localhost:8080/channels.scm")
+
+# Pull both guix and nonguix at their coordinated ready commits
+guix pull -C <(curl -fsSL "http://localhost:8080/channels.scm?additional_channels=nonguix")
+
 # Overwrite channels.scm with latest ready commit
 curl -fsSL "http://localhost:8080/channels.scm?system=x86_64-linux" > ~/.config/guix/channels.scm
 

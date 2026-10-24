@@ -136,8 +136,9 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 // handleStatusPageOrAPI performs content negotiation on /status:
 //   - Browser GET requests (Accept: text/html without a pkgs query parameter) receive
-//     the interactive HTML Status & Resolver page.
-//   - CLI tools (curl/wget), POST requests, or queries with ?pkgs=... receive the JSON status response.
+//     the interactive HTML Status & Resolver page (honoring ?additional_channels=nonguix).
+//   - CLI tools (curl/wget), POST requests, requests with Accept: application/json,
+//     or queries with ?pkgs=... receive the JSON status response.
 func (s *Server) handleStatusPageOrAPI(w http.ResponseWriter, r *http.Request) {
 	accept := r.Header.Get("Accept")
 	ua := strings.ToLower(r.Header.Get("User-Agent"))
@@ -154,6 +155,7 @@ func (s *Server) handleStatusPageOrAPI(w http.ResponseWriter, r *http.Request) {
 		snap := s.store.Snapshot()
 		baseURL := detectBaseURL(r)
 		st := buildDashboardState(baseURL, snap, s.poller)
+		st.RequireNonguix = hasAdditionalChannel(r, "nonguix")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = io.WriteString(w, renderHTMLStatusPage(st))
 		return
@@ -163,18 +165,23 @@ func (s *Server) handleStatusPageOrAPI(w http.ResponseWriter, r *http.Request) {
 }
 
 type evaluationSummaryItem struct {
-	EvaluationID  int64     `json:"evaluation_id"`
-	Commit        string    `json:"commit"`
-	Timestamp     time.Time `json:"timestamp"`
-	System        string    `json:"system"`
-	TotalJobs     int       `json:"total_jobs"`
-	SucceededJobs int       `json:"succeeded_jobs"`
-	PendingJobs   int       `json:"pending_jobs"`
-	FailedJobs    int       `json:"failed_jobs"`
-	PendingSample []string  `json:"pending_sample,omitempty"`
-	PullReady     bool      `json:"pull_ready"`
-	PullEvalID    int64     `json:"pull_evaluation_id,omitempty"`
-	Complete      bool      `json:"complete"`
+	EvaluationID       int64     `json:"evaluation_id"`
+	Commit             string    `json:"commit"`
+	Timestamp          time.Time `json:"timestamp"`
+	System             string    `json:"system"`
+	TotalJobs          int       `json:"total_jobs"`
+	SucceededJobs      int       `json:"succeeded_jobs"`
+	PendingJobs        int       `json:"pending_jobs"`
+	FailedJobs         int       `json:"failed_jobs"`
+	PendingSample      []string  `json:"pending_sample,omitempty"`
+	PullReady          bool      `json:"pull_ready"`
+	PullEvalID         int64     `json:"pull_evaluation_id,omitempty"`
+	NonguixEvalID      int64     `json:"nonguix_evaluation_id,omitempty"`
+	NonguixCommit      string    `json:"nonguix_commit,omitempty"`
+	NonguixReady       bool      `json:"nonguix_ready,omitempty"`
+	NonguixPendingJobs int       `json:"nonguix_pending_jobs,omitempty"`
+	NonguixServerURL   string    `json:"nonguix_server_url,omitempty"`
+	Complete           bool      `json:"complete"`
 }
 
 // handleEvaluations returns the list of cached evaluations and their build counts for a target system.
@@ -214,6 +221,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	snap := s.store.Snapshot()
 	baseURL := detectBaseURL(r)
 	st := buildDashboardState(baseURL, snap, s.poller)
+	st.RequireNonguix = hasAdditionalChannel(r, "nonguix")
 
 	accept := r.Header.Get("Accept")
 	ua := strings.ToLower(r.Header.Get("User-Agent"))
@@ -230,6 +238,19 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = io.WriteString(w, renderHTMLDashboard(st))
+}
+
+func hasAdditionalChannel(r *http.Request, target string) bool {
+	channels, err := resolver.NormalizeAdditionalChannels(r.URL.Query()["additional_channels"])
+	if err != nil {
+		return false
+	}
+	for _, ch := range channels {
+		if ch == target {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveRequest parses query parameters and optional POST body package specs,
@@ -264,6 +285,17 @@ func (s *Server) resolveRequest(r *http.Request) (*resolver.Result, error) {
 			q.Packages = append(q.Packages, v)
 		}
 	}
+	for _, v := range qParams["additional_channels"] {
+		if strings.TrimSpace(v) != "" {
+			q.AdditionalChannels = append(q.AdditionalChannels, v)
+		}
+	}
+
+	addChannels, err := resolver.NormalizeAdditionalChannels(q.AdditionalChannels)
+	if err != nil {
+		return nil, err
+	}
+	q.AdditionalChannels = addChannels
 
 	if r.Method == http.MethodPost && r.Body != nil {
 		bodyPkgs, err := parsePackagesFromBody(r)
@@ -274,7 +306,7 @@ func (s *Server) resolveRequest(r *http.Request) (*resolver.Result, error) {
 	}
 
 	if len(q.Packages) > 0 && s.poller != nil {
-		s.poller.ResolveMissingVersions(r.Context(), q.System, q.Packages)
+		s.poller.ResolveMissingVersions(r.Context(), q.System, q.Packages, addChannels...)
 		snap = s.store.Snapshot()
 	}
 

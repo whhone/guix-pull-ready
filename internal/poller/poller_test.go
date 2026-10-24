@@ -342,4 +342,131 @@ func TestPollerGuixPullReadyRefreshedForCompletedMasterEval(t *testing.T) {
 	}
 }
 
+func TestPollerNonguixCoordinationAndVersionResolution(t *testing.T) {
+	// Mock official Guix Cuirass server
+	guixSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/evaluations":
+			spec := r.URL.Query().Get("spec")
+			if spec == "guix" {
+				_, _ = w.Write([]byte(`[
+					{"id":1800,"specification":"guix","timestamp":1729170000,"checkouts":[{"commit":"guix800","channel":"guix"}]},
+					{"id":1799,"specification":"guix","timestamp":1729160000,"checkouts":[{"commit":"guix799","channel":"guix"}]}
+				]`))
+				return
+			}
+			_, _ = w.Write([]byte(`[
+				{"id":800,"specification":"master","timestamp":1729170000,"checkouts":[{"commit":"guix800","channel":"guix"}]},
+				{"id":799,"specification":"master","timestamp":1729160000,"checkouts":[{"commit":"guix799","channel":"guix"}]}
+			]`))
+		case "/api/jobs":
+			switch r.URL.Query().Get("evaluation") {
+			case "800":
+				// Guix 800 has 1 pending build
+				_, _ = w.Write([]byte(`[
+					{"build":101,"status":0,"name":"emacs.x86_64-linux"},
+					{"build":102,"status":-1,"name":"blender.x86_64-linux"}
+				]`))
+			case "799":
+				// Guix 799 has 0 pending builds
+				_, _ = w.Write([]byte(`[
+					{"build":103,"status":0,"name":"emacs.x86_64-linux"},
+					{"build":104,"status":0,"name":"blender.x86_64-linux"}
+				]`))
+			case "1800", "1799":
+				_, _ = w.Write([]byte(`[{"build":201,"status":0,"name":"guix.x86_64-linux"}]`))
+			}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer guixSrv.Close()
+
+	// Mock Nonguix Cuirass server (note: uses overlapping build IDs 101, 102!)
+	ngSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/evaluations":
+			_, _ = w.Write([]byte(`[
+				{"id":50,"specification":"nonguix","timestamp":1729170500,"checkouts":[{"commit":"ng50","channel":"nonguix"},{"commit":"guix800","channel":"guix"}]},
+				{"id":49,"specification":"nonguix","timestamp":1729160500,"checkouts":[{"commit":"ng49","channel":"nonguix"},{"commit":"guix799","channel":"guix"}]}
+			]`))
+		case "/api/jobs":
+			switch r.URL.Query().Get("evaluation") {
+			case "50":
+				// Multi-version linux in eval 50: 6.12 is pending (-1), 6.6 is succeeded (0)
+				_, _ = w.Write([]byte(`[
+					{"build":101,"status":-1,"name":"linux.x86_64-linux"},
+					{"build":102,"status":0,"name":"linux.x86_64-linux"},
+					{"build":103,"status":0,"name":"linux-firmware.x86_64-linux"}
+				]`))
+			case "49":
+				// All succeeded in eval 49
+				_, _ = w.Write([]byte(`[
+					{"build":91,"status":0,"name":"linux.x86_64-linux"},
+					{"build":92,"status":0,"name":"linux-firmware.x86_64-linux"}
+				]`))
+			}
+		case "/build/101":
+			_, _ = w.Write([]byte(`{"id":101,"derivation":"/gnu/store/xxxx-linux-6.12.1.drv"}`))
+		case "/build/102":
+			_, _ = w.Write([]byte(`{"id":102,"derivation":"/gnu/store/yyyy-linux-6.6.62.drv"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer ngSrv.Close()
+
+	guixClient := cuirass.NewClient(guixSrv.URL)
+	ngClient := cuirass.NewClient(ngSrv.URL)
+	st, err := store.Open(":memory:", guixSrv.URL, []string{"x86_64-linux"})
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+
+	p := New(guixClient, st, Config{
+		Systems:      []string{"x86_64-linux"},
+		Limit:        10,
+		PollInterval: time.Minute,
+		AdditionalChannels: []ChannelConfig{
+			{Name: "nonguix", Spec: "nonguix", Client: ngClient},
+		},
+	})
+
+	ctx := context.Background()
+	if err := p.SyncOnce(ctx); err != nil {
+		t.Fatalf("SyncOnce failed: %v", err)
+	}
+
+	// 1. Whole-evaluation mode with nonguix:
+	// Eval 50 (guix800) has pending builds on both nonguix and guix, so it should pick Eval 49 + Guix 799.
+	res, err := resolver.Resolve(st.Snapshot(), resolver.Query{
+		System:             "x86_64-linux",
+		MaxPending:         0,
+		AdditionalChannels: []string{"nonguix"},
+	})
+	if err != nil {
+		t.Fatalf("Resolve whole-eval with nonguix failed: %v", err)
+	}
+	if res.Commit != "guix799" || len(res.AdditionalChannels) != 1 || res.AdditionalChannels[0].Commit != "ng49" {
+		t.Fatalf("unexpected coordinated whole-eval result: %+v", res)
+	}
+
+	// 2. Package mode with versioned nonguix package "linux@6.6" and guix package "emacs":
+	// In eval 50 (guix800), emacs succeeded and linux@6.6 succeeded!
+	p.ResolveMissingVersions(ctx, "x86_64-linux", []string{"emacs", "linux@6.6"}, "nonguix")
+	resPkg, err := resolver.Resolve(st.Snapshot(), resolver.Query{
+		System:             "x86_64-linux",
+		Packages:           []string{"emacs", "linux@6.6"},
+		AdditionalChannels: []string{"nonguix"},
+	})
+	if err != nil {
+		t.Fatalf("Resolve package mode with nonguix failed: %v", err)
+	}
+	if resPkg.Commit != "guix800" || len(resPkg.AdditionalChannels) != 1 || resPkg.AdditionalChannels[0].Commit != "ng50" {
+		t.Fatalf("expected guix800 + ng50 for emacs + linux@6.6, got %+v", resPkg)
+	}
+}
+
 
