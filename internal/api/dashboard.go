@@ -675,7 +675,7 @@ func renderIntroBlock() string {
 	<div class="panel">
 		<h2>About This Service</h2>
 		<p style="margin:0;color:var(--muted);font-size:0.95rem;">
-			Finds the newest <strong>GNU Guix</strong> commit where prebuilt binaries (substitutes) for both <code>guix pull</code> and package builds are 100% ready on <a href="https://ci.guix.gnu.org" target="_blank" rel="noopener">Cuirass</a>, so updating your system never triggers slow local builds from source. Optionally coordinates with <a href="https://cuirass.nonguix.org/jobset/nonguix" target="_blank" rel="noopener">Nonguix</a>.
+			<code>guix pull</code> to the newest commit where prebuilt binaries are 100% ready on substitutes servers, so updating your system never triggers slow local builds from source. Optionally coordinates with <a href="https://gitlab.com/nonguix/nonguix" target="_blank" rel="noopener">Nonguix</a>.
 		</p>
 	</div>
 `

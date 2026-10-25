@@ -1,6 +1,6 @@
 # Guix Pull Ready
 
-Find the newest GNU Guix master commit whose prebuilt binaries (substitutes) are 100% ready on [Cuirass](https://ci.guix.gnu.org), allowing you to run `guix pull` or reconfigure systems without triggering long local builds from source.
+`guix pull` to the newest commit where prebuilt binaries are 100% ready on substitutes servers, so updating your system never triggers slow local builds from source. Optionally coordinates with [Nonguix](https://gitlab.com/nonguix/nonguix).
 
 > **Note:** This serves as a temporary community solution until official support lands (work on similar functionality upstream in GNU Guix is currently underway).
 
