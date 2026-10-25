@@ -177,6 +177,8 @@ func TestDashboardHTMLAndPlainIndex(t *testing.T) {
 		`data-copy="ffff6666eeee7777dddd8888cccc9999bbbb0000" onclick="copyFromBtn(this)">Copy Commit</button>`,
 		"Track automatically via ~/.config/guix/channels.scm:",
 		"(downloaded-channels",
+		"color-scheme: light dark;",
+		"@media (prefers-color-scheme: dark)",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("HTML overview missing %q", want)

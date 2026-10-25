@@ -303,7 +303,9 @@ func renderPageHead(title string) string {
 <title>` + html.EscapeString(title) + `</title>
 <style>
 	:root {
+		color-scheme: light dark;
 		--bg: #ffffff;
+		--surface: #ffffff;
 		--border: #e2e8f0;
 		--text: #0f172a;
 		--muted: #475569;
@@ -319,6 +321,31 @@ func renderPageHead(title string) string {
 		--err-text: #b91c1c;
 		--err-bar: #ef4444;
 		--code-bg: #f1f5f9;
+		--btn-hover: #e2e8f0;
+		--row-hover: #f8fafc;
+	}
+	@media (prefers-color-scheme: dark) {
+		:root {
+			--bg: #0f172a;
+			--surface: #1e293b;
+			--border: #334155;
+			--text: #f1f5f9;
+			--muted: #94a3b8;
+			--accent: #60a5fa;
+			--accent-hover: #3b82f6;
+			--ok-bg: #064e3b;
+			--ok-text: #6ee7b7;
+			--ok-bar: #22c55e;
+			--warn-bg: #451a03;
+			--warn-text: #fcd34d;
+			--warn-bar: #eab308;
+			--err-bg: #450a0a;
+			--err-text: #fca5a5;
+			--err-bar: #ef4444;
+			--code-bg: #0b1120;
+			--btn-hover: #334155;
+			--row-hover: #172033;
+		}
 	}
 	* { box-sizing: border-box; }
 	body {
@@ -418,7 +445,7 @@ func renderPageHead(title string) string {
 		width: 100%;
 	}
 	.card, .panel {
-		background: var(--bg);
+		background: var(--surface);
 		border: 1px solid var(--border);
 		border-radius: 8px;
 		padding: 1.25rem;
@@ -461,7 +488,7 @@ func renderPageHead(title string) string {
 		font-weight: 500;
 		white-space: nowrap;
 	}
-	button:hover, .btn:hover { background: #e2e8f0; }
+	button:hover, .btn:hover { background: var(--btn-hover); }
 	button.primary {
 		background: var(--accent);
 		color: #ffffff;
@@ -538,6 +565,8 @@ func renderPageHead(title string) string {
 		border-radius: 6px;
 		font-size: 0.9rem;
 		font-family: inherit;
+		background: var(--code-bg);
+		color: var(--text);
 	}
 	.checkboxes { display: flex; flex-wrap: wrap; gap: 1rem; margin-top: 0.65rem; font-size: 0.86rem; color: var(--muted); }
 	.checkboxes label { display: inline-flex; align-items: center; gap: 0.35rem; cursor: pointer; }
@@ -557,7 +586,7 @@ func renderPageHead(title string) string {
 	table { border-collapse: collapse; width: 100%; font-size: 0.88rem; }
 	th, td { border-bottom: 1px solid var(--border); padding: 0.65rem 0.75rem; text-align: left; vertical-align: middle; }
 	th { background: var(--code-bg); color: var(--muted); font-weight: 600; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.03em; }
-	tr:hover td { background: #f8fafc; }
+	tr:hover td { background: var(--row-hover); }
 
 	/* Progress Bar */
 	.prog-cell { min-width: 210px; }
@@ -810,7 +839,7 @@ func renderCLIExamplesBlock(escBaseURL string, requireNonguix bool) string {
 					<pre class="mono">(downloaded-channels "%s/channels.scm")</pre>
 					<button type="button" class="btn" data-copy="(downloaded-channels &quot;%s/channels.scm&quot;)" onclick="copyFromBtn(this)">Copy</button>
 				</div>
-				<div style="margin-top:0.35rem;font-size:0.8rem;color:var(--text-muted);">See GNU Guix manual on <a href="https://guix.gnu.org/manual/devel/en/html_node/Channels-with-Substitutes.html" target="_blank" rel="noopener">Channels with Substitutes</a>.</div>
+				<div style="margin-top:0.35rem;font-size:0.8rem;color:var(--muted);">See GNU Guix manual on <a href="https://guix.gnu.org/manual/devel/en/html_node/Channels-with-Substitutes.html" target="_blank" rel="noopener">Channels with Substitutes</a>.</div>
 			</div>
 		</div>`,
 		guixStyle,
@@ -836,7 +865,7 @@ func renderCLIExamplesBlock(escBaseURL string, requireNonguix bool) string {
 					<pre class="mono">(downloaded-channels "%s/channels.scm?additional_channels=nonguix")</pre>
 					<button type="button" class="btn" data-copy="(downloaded-channels &quot;%s/channels.scm?additional_channels=nonguix&quot;)" onclick="copyFromBtn(this)">Copy</button>
 				</div>
-				<div style="margin-top:0.35rem;font-size:0.8rem;color:var(--text-muted);">See GNU Guix manual on <a href="https://guix.gnu.org/manual/devel/en/html_node/Channels-with-Substitutes.html" target="_blank" rel="noopener">Channels with Substitutes</a>.</div>
+				<div style="margin-top:0.35rem;font-size:0.8rem;color:var(--muted);">See GNU Guix manual on <a href="https://guix.gnu.org/manual/devel/en/html_node/Channels-with-Substitutes.html" target="_blank" rel="noopener">Channels with Substitutes</a>.</div>
 			</div>
 		</div>
 	</div>`,
@@ -1299,7 +1328,7 @@ async function runFinder(ev) {
 				untrackedHtml +
 				'<pre class="code-box" style="background:var(--bg);">' + escapeHtml(scmText) + '</pre>' +
 				'<div style="margin-top:0.6rem;font-size:0.85rem;">' +
-					'<div style="margin-bottom:0.25rem;color:var(--text-muted);">Or track automatically in <code>~/.config/guix/channels.scm</code> via <code>downloaded-channels</code>:</div>' +
+					'<div style="margin-bottom:0.25rem;color:var(--muted);">Or track automatically in <code>~/.config/guix/channels.scm</code> via <code>downloaded-channels</code>:</div>' +
 					'<pre class="code-box" style="background:var(--bg);">' + escapeHtml(downloadedChannelsExpr) + '</pre>' +
 				'</div>' +
 			'</div>';
