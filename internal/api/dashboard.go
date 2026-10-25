@@ -244,8 +244,8 @@ func renderPlainIndex(st dashboardState) string {
 	return b.String()
 }
 
-// renderHTMLDashboard renders the main landing page ("/") with the ready commit, CLI usage commands,
-// and the recent master evaluations table.
+// renderHTMLDashboard renders the main landing page ("/") with a short service overview,
+// CLI usage commands, and the recent master evaluations table.
 func renderHTMLDashboard(st dashboardState) string {
 	var b strings.Builder
 	ov := st.BySystem[st.ActiveSystem]
@@ -256,7 +256,7 @@ func renderHTMLDashboard(st dashboardState) string {
 	b.WriteString(renderPageHeader(st.RequireNonguix))
 
 	b.WriteString(`<main>`)
-	b.WriteString(renderReadyCommitBlock(ov, escServerURL, st.RequireNonguix))
+	b.WriteString(renderIntroBlock())
 	b.WriteString(renderCLIExamplesBlock(escBaseURL, st.RequireNonguix))
 	b.WriteString(renderEvaluationsTable(ov, escServerURL, st.RequireNonguix))
 	b.WriteString(`</main>`)
@@ -559,6 +559,9 @@ func renderPageHead(title string) string {
 	th, td { border-bottom: 1px solid var(--border); padding: 0.65rem 0.75rem; text-align: left; vertical-align: middle; }
 	th { background: var(--code-bg); color: var(--muted); font-weight: 600; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.03em; }
 	tr:hover td { background: var(--row-hover); }
+	tr.row-latest-ready td { background: rgba(34, 197, 94, 0.08); }
+	tr.row-latest-ready:hover td { background: rgba(34, 197, 94, 0.14); }
+	tr.row-latest-ready td:first-child { box-shadow: inset 3px 0 0 var(--ok-bar); }
 
 	/* Progress Bar */
 	.prog-cell { min-width: 210px; }
@@ -667,7 +670,18 @@ func renderPageHeader(requireNonguix bool) string {
 `, querySuffix)
 }
 
-func renderReadyCommitBlock(ov systemOverview, escServerURL string, requireNonguix bool) string {
+func renderIntroBlock() string {
+	return `
+	<div class="panel">
+		<h2>About This Service</h2>
+		<p style="margin:0;color:var(--muted);font-size:0.95rem;">
+			Finds the newest <strong>GNU Guix</strong> commit where prebuilt binaries (substitutes) for both <code>guix pull</code> and package builds are 100% ready on <a href="https://ci.guix.gnu.org" target="_blank" rel="noopener">Cuirass</a>, so updating your system never triggers slow local builds from source. Optionally coordinates with <a href="https://cuirass.nonguix.org/jobset/nonguix" target="_blank" rel="noopener">Nonguix</a>.
+		</p>
+	</div>
+`
+}
+
+func renderCLIExamplesBlock(escBaseURL string, requireNonguix bool) string {
 	var b strings.Builder
 	checkedAttr := ""
 	guixStyle := ""
@@ -678,116 +692,10 @@ func renderReadyCommitBlock(ov systemOverview, escServerURL string, requireNongu
 		ngStyle = ""
 	}
 	b.WriteString(`<div class="panel">`)
-	b.WriteString(`<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem;margin-bottom:0.5rem;">`)
-	b.WriteString(`<h2 style="margin:0;">Latest Commit with All Prebuilts Ready on Substitutes</h2>`)
+	b.WriteString(`<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem;">`)
+	b.WriteString(`<h2 style="margin:0;">Usage</h2>`)
 	fmt.Fprintf(&b, `<label style="font-size:0.88rem;font-weight:500;color:var(--muted);cursor:pointer;display:inline-flex;align-items:center;gap:0.35rem;"><input type="checkbox" id="main-nonguix-toggle"%s onchange="toggleMainNonguix(this.checked)"> Require <code>nonguix</code> channel</label>`, checkedAttr)
 	b.WriteString(`</div>`)
-
-	fmt.Fprintf(&b, `<div id="main-commit-guix"%s>`, guixStyle)
-	if ov.StrictReady != nil {
-		r := ov.StrictReady
-		dateHTML := formatEvalDateHTML(r.EvaluationDate)
-		fmt.Fprintf(&b, `
-		<div class="card-commit mono">
-			<a href="https://codeberg.org/guix/guix/commit/%s" target="_blank" rel="noopener">%s</a>
-			<button type="button" class="btn" data-copy="%s" onclick="copyFromBtn(this)">Copy Commit</button>
-		</div>
-		<div class="card-meta">Eval <a href="%s/eval/%d" target="_blank" rel="noopener">#%d</a>%s &middot; %d behind master &middot; %d packages built</div>`,
-			html.EscapeString(r.Commit), html.EscapeString(r.Commit),
-			html.EscapeString(r.Commit),
-			escServerURL, r.EvaluationID, r.EvaluationID, dateHTML, r.EvaluationsBehind, r.SucceededCount,
-		)
-	} else if ov.BestAvailable != nil {
-		r := ov.BestAvailable
-		dateHTML := formatEvalDateHTML(r.EvaluationDate)
-		fmt.Fprintf(&b, `
-		<div style="margin-bottom:0.35rem;">
-			<span class="badge badge-warn">Closest to Ready (%d Pending, no 0-pending in last %d)</span>
-		</div>
-		<div class="card-commit mono">
-			<a href="https://codeberg.org/guix/guix/commit/%s" target="_blank" rel="noopener">%s</a>
-			<button type="button" class="btn" data-copy="%s" onclick="copyFromBtn(this)">Copy Commit</button>
-		</div>
-		<div class="card-meta">Eval <a href="%s/eval/%d" target="_blank" rel="noopener">#%d</a>%s &middot; %d behind master &middot; %d packages built</div>`,
-			r.PendingCount, len(ov.Evaluations),
-			html.EscapeString(r.Commit), html.EscapeString(r.Commit),
-			html.EscapeString(r.Commit),
-			escServerURL, r.EvaluationID, r.EvaluationID, dateHTML, r.EvaluationsBehind, r.SucceededCount,
-		)
-	} else {
-		b.WriteString(`<div class="card-meta">Initial evaluation sync from Cuirass is in progress.</div>`)
-	}
-	b.WriteString(`</div>`)
-
-	fmt.Fprintf(&b, `<div id="main-commit-nonguix"%s>`, ngStyle)
-	ngRes := ov.NonguixStrictReady
-	isNgFallback := false
-	if ngRes == nil && ov.NonguixBestAvailable != nil {
-		ngRes = ov.NonguixBestAvailable
-		isNgFallback = true
-	}
-	if ngRes != nil {
-		if isNgFallback {
-			fmt.Fprintf(&b, `<div style="margin-bottom:0.35rem;"><span class="badge badge-warn">Closest Coordinated Evaluation (%d Pending on Guix)</span></div>`, ngRes.PendingCount)
-		}
-		guixDateHTML := formatEvalDateHTML(ngRes.EvaluationDate)
-		fmt.Fprintf(&b, `
-		<div style="font-size:0.82rem;font-weight:600;color:var(--muted);margin-top:0.25rem;">guix channel:</div>
-		<div class="card-commit mono">
-			<a href="https://codeberg.org/guix/guix/commit/%s" target="_blank" rel="noopener">%s</a>
-			<button type="button" class="btn" data-copy="%s" onclick="copyFromBtn(this)">Copy Commit</button>
-		</div>
-		<div class="card-meta">Eval <a href="%s/eval/%d" target="_blank" rel="noopener">#%d</a>%s &middot; %d behind master &middot; %d packages built</div>`,
-			html.EscapeString(ngRes.Commit), html.EscapeString(ngRes.Commit),
-			html.EscapeString(ngRes.Commit),
-			escServerURL, ngRes.EvaluationID, ngRes.EvaluationID, guixDateHTML, ngRes.EvaluationsBehind, ngRes.SucceededCount,
-		)
-		for _, ch := range ngRes.AdditionalChannels {
-			chDateHTML := formatEvalDateHTML(ch.EvaluationDate)
-			chServer := html.EscapeString(ch.ServerURL)
-			fmt.Fprintf(&b, `
-		<div style="font-size:0.82rem;font-weight:600;color:var(--muted);margin-top:0.65rem;">%s channel:</div>
-		<div class="card-commit mono">
-			<a href="https://gitlab.com/nonguix/nonguix/-/commit/%s" target="_blank" rel="noopener">%s</a>
-			<button type="button" class="btn" data-copy="%s" onclick="copyFromBtn(this)">Copy Commit</button>
-		</div>
-		<div class="card-meta">Eval <a href="%s/eval/%d" target="_blank" rel="noopener">#%d</a>%s &middot; %d behind %s &middot; %d packages built</div>`,
-				html.EscapeString(ch.Channel),
-				html.EscapeString(ch.Commit), html.EscapeString(ch.Commit),
-				html.EscapeString(ch.Commit),
-				chServer, ch.EvaluationID, ch.EvaluationID, chDateHTML, ch.EvaluationsBehind, html.EscapeString(ch.Channel), ch.SucceededCount,
-			)
-		}
-	} else {
-		b.WriteString(`<div class="card-meta">Waiting for coordinated nonguix + guix evaluation data...</div>`)
-	}
-	b.WriteString(`</div>`)
-
-	b.WriteString(`</div>`)
-	return b.String()
-}
-
-func formatEvalDateHTML(t time.Time) string {
-	if t.IsZero() {
-		return ""
-	}
-	utcStr := t.UTC().Format("2006-01-02 15:04:05 UTC")
-	shortUTC := t.UTC().Format("2006-01-02 15:04")
-	isoStr := t.UTC().Format(time.RFC3339)
-	return fmt.Sprintf(` &middot; <span class="local-time" data-utc="%s" title="%s">%s</span>`,
-		html.EscapeString(isoStr), html.EscapeString(utcStr), html.EscapeString(shortUTC))
-}
-
-func renderCLIExamplesBlock(escBaseURL string, requireNonguix bool) string {
-	var b strings.Builder
-	guixStyle := ""
-	ngStyle := ` style="display:none;"`
-	if requireNonguix {
-		guixStyle = ` style="display:none;"`
-		ngStyle = ""
-	}
-	b.WriteString(`<div class="panel">`)
-	b.WriteString(`<h2>Usages</h2>`)
 
 	fmt.Fprintf(&b, `
 		<div id="main-cli-guix" class="examples-list"%s>
@@ -847,6 +755,15 @@ func renderEvaluationsTable(ov systemOverview, escServerURL string, requireNongu
 	if requireNonguix {
 		ngColStyle = ""
 	}
+	var latestGuixEvalID int64
+	if ov.StrictReady != nil {
+		latestGuixEvalID = ov.StrictReady.EvaluationID
+	}
+	var latestNgEvalID int64
+	if ov.NonguixStrictReady != nil {
+		latestNgEvalID = ov.NonguixStrictReady.EvaluationID
+	}
+
 	fmt.Fprintf(&b, `
 	<div class="panel">
 		<h2>Recent Master Evaluations</h2>
@@ -872,6 +789,36 @@ func renderEvaluationsTable(ov systemOverview, escServerURL string, requireNongu
 `, ngColStyle)
 		for _, item := range ov.Evaluations {
 			short := shortCommit(item.Commit)
+			isLatestGuix := latestGuixEvalID > 0 && item.EvaluationID == latestGuixEvalID
+			isLatestNg := latestNgEvalID > 0 && item.EvaluationID == latestNgEvalID
+
+			var rowAttrs strings.Builder
+			if isLatestGuix {
+				rowAttrs.WriteString(` data-latest-guix="1"`)
+			}
+			if isLatestNg {
+				rowAttrs.WriteString(` data-latest-nonguix="1"`)
+			}
+			if (!requireNonguix && isLatestGuix) || (requireNonguix && isLatestNg) {
+				rowAttrs.WriteString(` class="row-latest-ready"`)
+			}
+
+			var latestBadges strings.Builder
+			if isLatestGuix {
+				badgeStyle := ` style="margin-left:0.35rem;"`
+				if requireNonguix {
+					badgeStyle = ` style="margin-left:0.35rem;display:none;"`
+				}
+				fmt.Fprintf(&latestBadges, `<span class="badge badge-ok latest-guix-badge"%s>Latest Ready</span>`, badgeStyle)
+			}
+			if isLatestNg {
+				badgeStyle := ` style="margin-left:0.35rem;display:none;"`
+				if requireNonguix {
+					badgeStyle = ` style="margin-left:0.35rem;"`
+				}
+				fmt.Fprintf(&latestBadges, `<span class="badge badge-ok latest-nonguix-badge"%s>Latest Ready</span>`, badgeStyle)
+			}
+
 			dateCell := `<td class="mono" style="white-space:nowrap;">unknown</td>`
 			if !item.Timestamp.IsZero() {
 				utcStr := item.Timestamp.UTC().Format("2006-01-02 15:04:05 UTC")
@@ -911,17 +858,18 @@ func renderEvaluationsTable(ov systemOverview, escServerURL string, requireNongu
 			}
 
 			fmt.Fprintf(&b, `
-					<tr>
+					<tr%s>
 						<td class="mono">
 							<a href="https://codeberg.org/guix/guix/commit/%s" target="_blank" rel="noopener">%s</a>
-							<button type="button" data-copy="%s" onclick="copyFromBtn(this)" style="padding:0.1rem 0.4rem;font-size:0.72rem;margin-left:0.3rem;">Copy</button>
+							<button type="button" data-copy="%s" onclick="copyFromBtn(this)" style="padding:0.1rem 0.4rem;font-size:0.72rem;margin-left:0.3rem;">Copy</button>%s
 						</td>
 						%s
 						<td>%s</td>
 						<td>%s</td>
 						<td class="col-nonguix"%s>%s</td>
 					</tr>`,
-				html.EscapeString(item.Commit), html.EscapeString(short), html.EscapeString(item.Commit),
+				rowAttrs.String(),
+				html.EscapeString(item.Commit), html.EscapeString(short), html.EscapeString(item.Commit), latestBadges.String(),
 				dateCell,
 				masterCell,
 				pullCell,
@@ -1018,19 +966,25 @@ function syncNonguixURLParam(checked) {
 }
 
 function toggleMainNonguix(checked) {
-	const cGuix = document.getElementById("main-commit-guix");
-	const cNg = document.getElementById("main-commit-nonguix");
 	const cliGuix = document.getElementById("main-cli-guix");
 	const cliNg = document.getElementById("main-cli-nonguix");
-	if (cGuix && cNg) {
-		cGuix.style.display = checked ? "none" : "block";
-		cNg.style.display = checked ? "block" : "none";
-	}
 	if (cliGuix && cliNg) {
 		cliGuix.style.display = checked ? "none" : "flex";
 		cliNg.style.display = checked ? "flex" : "none";
 	}
 	document.querySelectorAll(".col-nonguix").forEach((el) => {
+		el.style.display = checked ? "" : "none";
+	});
+	document.querySelectorAll("tbody tr").forEach((tr) => {
+		const isLatest = checked
+			? tr.getAttribute("data-latest-nonguix") === "1"
+			: tr.getAttribute("data-latest-guix") === "1";
+		tr.classList.toggle("row-latest-ready", isLatest);
+	});
+	document.querySelectorAll(".latest-guix-badge").forEach((el) => {
+		el.style.display = checked ? "none" : "";
+	});
+	document.querySelectorAll(".latest-nonguix-badge").forEach((el) => {
 		el.style.display = checked ? "" : "none";
 	});
 	syncNonguixURLParam(checked);

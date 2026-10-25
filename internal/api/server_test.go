@@ -169,17 +169,18 @@ func TestDashboardHTMLAndPlainIndex(t *testing.T) {
 	body := rec.Body.String()
 	for _, want := range []string{
 		"Guix Pull with All Prebuilts Ready",
-		"Latest Commit with All Prebuilts Ready on Substitutes",
-		"Usages",
+		"About This Service",
+		"Usage",
 		"Recent Master Evaluations",
 		"guix commit",
 		"Date (Local)",
 		`class="local-time" data-utc="`,
 		"#700",
 		"#699",
+		`class="row-latest-ready"`,
+		`latest-guix-badge" style="margin-left:0.35rem;">Latest Ready</span>`,
 		`<pre class="mono">guix pull -C &lt;(curl -fsSL "http://example.com/channels.scm")</pre>`,
 		`data-copy="guix pull -C &lt;(curl -fsSL &quot;http://example.com/channels.scm&quot;)" onclick="copyFromBtn(this)"`,
-		`data-copy="ffff6666eeee7777dddd8888cccc9999bbbb0000" onclick="copyFromBtn(this)">Copy Commit</button>`,
 		"Track automatically via ~/.config/guix/channels.scm:",
 		"(downloaded-channels",
 		"color-scheme: light dark;",
@@ -190,8 +191,9 @@ func TestDashboardHTMLAndPlainIndex(t *testing.T) {
 		}
 	}
 
-	// Must NOT contain removed status link, interactive resolver, poll badges, or arch switcher on the overview page
+	// Must NOT contain removed top commit block, status link, interactive resolver, poll badges, or arch switcher
 	for _, unwanted := range []string{
+		"Latest Commit with All Prebuilts Ready on Substitutes",
 		`<a href="/status">Status</a>`,
 		"Interactive Commit &amp; Package Resolver",
 		"Latest Master Evaluation",
@@ -431,15 +433,17 @@ func TestAdditionalChannelsNonguixAPI(t *testing.T) {
 	}
 	homeHTML := rec.Body.String()
 	if !strings.Contains(homeHTML, `id="main-nonguix-toggle" checked`) ||
-		!strings.Contains(homeHTML, `<div id="main-commit-guix" style="display:none;">`) ||
-		!strings.Contains(homeHTML, `<div id="main-commit-nonguix">`) ||
+		!strings.Contains(homeHTML, `id="main-cli-guix" class="examples-list" style="display:none;"`) ||
+		!strings.Contains(homeHTML, `id="main-cli-nonguix" class="examples-list"`) ||
 		!strings.Contains(homeHTML, `https://gitlab.com/nonguix/nonguix/#substitutes-for-nonguix`) ||
 		!strings.Contains(homeHTML, `<th><a href="https://ci.guix.gnu.org/jobset/guix" target="_blank" rel="noopener">guix/guix</a></th>`) ||
 		!strings.Contains(homeHTML, `<th><a href="https://ci.guix.gnu.org/jobset/master" target="_blank" rel="noopener">guix/master</a></th>`) ||
 		!strings.Contains(homeHTML, `<th class="col-nonguix"><a href="https://cuirass.nonguix.org/jobset/nonguix" target="_blank" rel="noopener">nonguix/nonguix</a></th>`) ||
 		!strings.Contains(homeHTML, `https://cuirass.nonguix.org/eval/55`) ||
-		!strings.Contains(homeHTML, `<strong>#55</strong>`) {
-		t.Fatalf("home HTML with ?additional_channels=nonguix did not pre-select nonguix state, table column, or substitute setup link")
+		!strings.Contains(homeHTML, `<strong>#55</strong>`) ||
+		!strings.Contains(homeHTML, `class="row-latest-ready"`) ||
+		!strings.Contains(homeHTML, `latest-nonguix-badge" style="margin-left:0.35rem;">Latest Ready</span>`) {
+		t.Fatalf("home HTML with ?additional_channels=nonguix did not pre-select nonguix state, table column, latest ready row, or substitute setup link")
 	}
 
 	// 5. GET /commit?additional_channels=invalid -> 400 Bad Request
