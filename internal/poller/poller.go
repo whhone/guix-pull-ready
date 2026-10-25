@@ -201,6 +201,24 @@ func (p *Poller) syncEvaluations(ctx context.Context) error {
 		}
 	}
 	p.store.UpdateEvaluations(records, p.cfg.Limit*2)
+	for i := range records {
+		commit := records[i].Commit
+		if commit == "" || commit == "unknown" {
+			continue
+		}
+		if ct, ok := p.store.GetCommitTime(commit); ok {
+			records[i].Timestamp = ct
+			continue
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if ct, err := p.client.CommitTimestamp(ctx, commit); err == nil && !ct.IsZero() {
+			p.store.SetCommitTime(commit, ct)
+			records[i].Timestamp = ct
+		}
+	}
+	p.store.PublishSnapshot()
 	if snap := p.store.Snapshot(); snap != nil && len(snap.Evaluations) > len(records) {
 		records = snap.Evaluations
 	}

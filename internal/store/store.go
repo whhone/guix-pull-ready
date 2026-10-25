@@ -108,6 +108,7 @@ type persistedState struct {
 	Evaluations        []EvaluationRecord
 	SystemData         map[EvalSystemKey]*SystemEvalData
 	PullByCommit       map[string]map[string]PullEvalStatus // commit -> system -> PullEvalStatus
+	CommitTimes        map[string]time.Time                 // commit -> Git commit timestamp (UTC)
 	BuildNixNames      map[int64]string                     // buildID -> nixname
 	ChannelEvaluations map[string][]EvaluationRecord
 	ChannelSystemData  map[ChannelEvalSystemKey]*SystemEvalData
@@ -135,6 +136,7 @@ func Open(dbPath string, serverURL string, systems []string) (*Store, error) {
 			Systems:            append([]string(nil), systems...),
 			SystemData:         make(map[EvalSystemKey]*SystemEvalData),
 			PullByCommit:       make(map[string]map[string]PullEvalStatus),
+			CommitTimes:        make(map[string]time.Time),
 			BuildNixNames:      make(map[int64]string),
 			ChannelEvaluations: make(map[string][]EvaluationRecord),
 			ChannelSystemData:  make(map[ChannelEvalSystemKey]*SystemEvalData),
@@ -204,6 +206,9 @@ func (s *Store) loadFromDisk() error {
 	if loaded.PullByCommit == nil {
 		loaded.PullByCommit = make(map[string]map[string]PullEvalStatus)
 	}
+	if loaded.CommitTimes == nil {
+		loaded.CommitTimes = make(map[string]time.Time)
+	}
 	if loaded.BuildNixNames == nil {
 		loaded.BuildNixNames = make(map[int64]string)
 	}
@@ -265,6 +270,12 @@ func (s *Store) loadFromDisk() error {
 				multi[ipkg] = jobs
 			}
 			data.JobsByBase = multi
+		}
+	}
+
+	for i := range loaded.Evaluations {
+		if ct, ok := loaded.CommitTimes[loaded.Evaluations[i].Commit]; ok && !ct.IsZero() {
+			loaded.Evaluations[i].Timestamp = ct
 		}
 	}
 
@@ -444,6 +455,34 @@ func (s *Store) IsChannelEvalSystemComplete(channel string, evalID int64, system
 	return ok && data.Complete
 }
 
+// GetCommitTime returns any cached Git commit timestamp for the given commit hash.
+func (s *Store) GetCommitTime(commit string) (time.Time, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	t, ok := s.state.CommitTimes[commit]
+	return t, ok && !t.IsZero()
+}
+
+// SetCommitTime records the Git commit timestamp for the given commit hash
+// and updates any matching evaluation records in memory.
+func (s *Store) SetCommitTime(commit string, t time.Time) {
+	if commit == "" || t.IsZero() {
+		return
+	}
+	utc := t.UTC()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state.CommitTimes == nil {
+		s.state.CommitTimes = make(map[string]time.Time)
+	}
+	s.state.CommitTimes[commit] = utc
+	for i := range s.state.Evaluations {
+		if s.state.Evaluations[i].Commit == commit {
+			s.state.Evaluations[i].Timestamp = utc
+		}
+	}
+}
+
 // GetPullStatus returns any cached "guix" jobset pull status for (commit, system).
 func (s *Store) GetPullStatus(commit, system string) (PullEvalStatus, bool) {
 	s.mu.RLock()
@@ -504,6 +543,9 @@ func (s *Store) UpdateEvaluations(evals []EvaluationRecord, maxRetained int) {
 	for _, ev := range evals {
 		if !seenID[ev.ID] {
 			seenID[ev.ID] = true
+			if ct, ok := s.state.CommitTimes[ev.Commit]; ok && !ct.IsZero() {
+				ev.Timestamp = ct
+			}
 			merged = append(merged, ev)
 		}
 	}
@@ -511,6 +553,9 @@ func (s *Store) UpdateEvaluations(evals []EvaluationRecord, maxRetained int) {
 	for _, prev := range s.state.Evaluations {
 		if !seenID[prev.ID] && refCommits[prev.Commit] {
 			seenID[prev.ID] = true
+			if ct, ok := s.state.CommitTimes[prev.Commit]; ok && !ct.IsZero() {
+				prev.Timestamp = ct
+			}
 			merged = append(merged, prev)
 		}
 	}
@@ -542,6 +587,11 @@ func (s *Store) UpdateEvaluations(evals []EvaluationRecord, maxRetained int) {
 		for commit := range s.state.PullByCommit {
 			if !keepCommit[commit] {
 				delete(s.state.PullByCommit, commit)
+			}
+		}
+		for commit := range s.state.CommitTimes {
+			if !keepCommit[commit] {
+				delete(s.state.CommitTimes, commit)
 			}
 		}
 	}

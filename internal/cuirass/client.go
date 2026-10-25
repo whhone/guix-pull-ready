@@ -181,12 +181,13 @@ func (b Build) ResolvedNixName() string {
 
 // Client is a concurrency-limited, retrying HTTP client for a Cuirass server.
 type Client struct {
-	baseURL    string
-	httpClient *http.Client
-	sem        chan struct{}
-	maxRetries int
-	retryDelay time.Duration
-	userAgent  string
+	baseURL       string
+	commitBaseURL string
+	httpClient    *http.Client
+	sem           chan struct{}
+	maxRetries    int
+	retryDelay    time.Duration
+	userAgent     string
 }
 
 // Option configures a Client.
@@ -213,14 +214,27 @@ func WithRetry(maxRetries int, baseDelay time.Duration) Option {
 	}
 }
 
+// WithCommitBaseURL sets the base URL for looking up Git commit metadata (e.g.
+// "https://codeberg.org/api/v1/repos/guix/guix/git/commits").
+func WithCommitBaseURL(url string) Option {
+	return func(c *Client) {
+		c.commitBaseURL = strings.TrimRight(url, "/")
+	}
+}
+
 // NewClient constructs a new Cuirass API client.
 func NewClient(baseURL string, opts ...Option) *Client {
 	trimmed := strings.TrimRight(baseURL, "/")
 	if trimmed == "" {
 		trimmed = "https://ci.guix.gnu.org"
 	}
+	var defaultCommitBaseURL string
+	if strings.HasPrefix(trimmed, "https://ci.guix.gnu.org") {
+		defaultCommitBaseURL = "https://codeberg.org/api/v1/repos/guix/guix/git/commits"
+	}
 	c := &Client{
-		baseURL: trimmed,
+		baseURL:       trimmed,
+		commitBaseURL: defaultCommitBaseURL,
 		httpClient: &http.Client{
 			Timeout: 60 * time.Second,
 		},
@@ -353,6 +367,71 @@ func (c *Client) Build(ctx context.Context, buildID int64) (*Build, error) {
 		return nil, err
 	}
 	return &b, nil
+}
+
+// CommitTimestamp fetches the Git commit timestamp for the given commit SHA from
+// the configured commit API base URL (Codeberg for ci.guix.gnu.org).
+// If no commit API base URL is configured, it returns a zero time.Time and nil error.
+func (c *Client) CommitTimestamp(ctx context.Context, commit string) (time.Time, error) {
+	if c.commitBaseURL == "" || commit == "" || commit == "unknown" {
+		return time.Time{}, nil
+	}
+	select {
+	case c.sem <- struct{}{}:
+		defer func() { <-c.sem }()
+	case <-ctx.Done():
+		return time.Time{}, ctx.Err()
+	}
+
+	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	fullURL := c.commitBaseURL + "/" + url.PathEscape(commit)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, fullURL, nil)
+	if err != nil {
+		return time.Time{}, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", c.userAgent)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return time.Time{}, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return time.Time{}, fmt.Errorf("HTTP %d from %s", resp.StatusCode, fullURL)
+	}
+
+	var payload struct {
+		Created time.Time `json:"created"`
+		Commit  struct {
+			Committer struct {
+				Date time.Time `json:"date"`
+			} `json:"committer"`
+			Author struct {
+				Date time.Time `json:"date"`
+			} `json:"author"`
+		} `json:"commit"`
+	}
+	decErr := json.NewDecoder(resp.Body).Decode(&payload)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if decErr != nil {
+		return time.Time{}, decErr
+	}
+
+	if !payload.Commit.Committer.Date.IsZero() {
+		return payload.Commit.Committer.Date.UTC(), nil
+	}
+	if !payload.Created.IsZero() {
+		return payload.Created.UTC(), nil
+	}
+	if !payload.Commit.Author.Date.IsZero() {
+		return payload.Commit.Author.Date.UTC(), nil
+	}
+	return time.Time{}, nil
 }
 
 // SpecToNameAndVer parses a Guix package spec like "gcc-toolchain@14:debug" into

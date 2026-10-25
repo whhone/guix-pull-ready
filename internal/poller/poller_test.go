@@ -65,13 +65,20 @@ func TestPollerIncrementalSyncAndBuildCache(t *testing.T) {
 		case "/build/903":
 			buildCalls.Add(1)
 			_, _ = w.Write([]byte(`{"id":903,"derivation":"/gnu/store/bbbb-gcc-toolchain-13.3.0.drv","buildstatus":0,"finished":1}`))
+		case "/commits/commit500":
+			_, _ = w.Write([]byte(`{"sha":"commit500","commit":{"committer":{"date":"2026-10-17T10:00:00Z"}}}`))
+		case "/commits/commit499":
+			_, _ = w.Write([]byte(`{"sha":"commit499","commit":{"committer":{"date":"2026-10-17T09:00:00Z"}}}`))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
 	defer srv.Close()
 
-	client := cuirass.NewClient(srv.URL, cuirass.WithRetry(2, 5*time.Millisecond))
+	client := cuirass.NewClient(srv.URL,
+		cuirass.WithRetry(2, 5*time.Millisecond),
+		cuirass.WithCommitBaseURL(srv.URL+"/commits"),
+	)
 	st, err := store.Open(":memory:", srv.URL, []string{"x86_64-linux"})
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
@@ -114,6 +121,10 @@ func TestPollerIncrementalSyncAndBuildCache(t *testing.T) {
 	}
 	if res.Commit != "commit500" {
 		t.Fatalf("expected commit500 for gcc-toolchain@13, got %s", res.Commit)
+	}
+	wantCommitTime := time.Date(2026, 10, 17, 10, 0, 0, 0, time.UTC)
+	if !res.EvaluationDate.Equal(wantCommitTime) {
+		t.Fatalf("expected EvaluationDate = %v (from commit metadata), got %v", wantCommitTime, res.EvaluationDate)
 	}
 	if buildCalls.Load() != 2 {
 		t.Fatalf("expected 2 build calls, got %d", buildCalls.Load())
