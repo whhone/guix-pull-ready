@@ -6,8 +6,6 @@
 
 Public instance: **https://guix-pull-ready.whhone.com**
 
-![Guix Pull Ready](screenshots/guix-pull-ready-small.png)
-
 ## How It Works
 
 1. **Evaluations and Jobs**: When commits are pushed to GNU Guix, the build farm ([Cuirass](https://ci.guix.gnu.org)) creates an **evaluation** with build **jobs** for all packages on each architecture (e.g. `x86_64-linux`).
