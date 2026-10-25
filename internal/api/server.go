@@ -59,7 +59,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/healthz", s.handleHealthz)
 	s.mux.HandleFunc("/commit", s.handleCommit)
 	s.mux.HandleFunc("/channels.scm", s.handleChannelsSCM)
-	s.mux.HandleFunc("/status", s.handleStatusPageOrAPI)
+	s.mux.HandleFunc("/status", s.handleStatus)
 	s.mux.HandleFunc("/evaluations", s.handleEvaluations)
 }
 
@@ -132,36 +132,6 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, res)
-}
-
-// handleStatusPageOrAPI performs content negotiation on /status:
-//   - Browser GET requests (Accept: text/html without a pkgs query parameter) receive
-//     the interactive HTML Status & Resolver page (honoring ?additional_channels=nonguix).
-//   - CLI tools (curl/wget), POST requests, requests with Accept: application/json,
-//     or queries with ?pkgs=... receive the JSON status response.
-func (s *Server) handleStatusPageOrAPI(w http.ResponseWriter, r *http.Request) {
-	accept := r.Header.Get("Accept")
-	ua := strings.ToLower(r.Header.Get("User-Agent"))
-	hasPkgParam := r.URL.Query().Get("pkgs") != ""
-
-	isBrowserHTML := r.Method == http.MethodGet &&
-		strings.Contains(accept, "text/html") &&
-		!strings.Contains(accept, "application/json") &&
-		!hasPkgParam &&
-		!strings.HasPrefix(ua, "curl/") &&
-		!strings.HasPrefix(ua, "wget/")
-
-	if isBrowserHTML {
-		snap := s.store.Snapshot()
-		baseURL := detectBaseURL(r)
-		st := buildDashboardState(baseURL, snap, s.poller)
-		st.RequireNonguix = hasAdditionalChannel(r, "nonguix")
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = io.WriteString(w, renderHTMLStatusPage(st))
-		return
-	}
-
-	s.handleStatus(w, r)
 }
 
 type evaluationSummaryItem struct {

@@ -244,7 +244,8 @@ func renderPlainIndex(st dashboardState) string {
 	return b.String()
 }
 
-// renderHTMLDashboard renders the main landing page ("/") with the ready commit and CLI usage commands.
+// renderHTMLDashboard renders the main landing page ("/") with the ready commit, CLI usage commands,
+// and the recent master evaluations table.
 func renderHTMLDashboard(st dashboardState) string {
 	var b strings.Builder
 	ov := st.BySystem[st.ActiveSystem]
@@ -252,45 +253,16 @@ func renderHTMLDashboard(st dashboardState) string {
 	escServerURL := html.EscapeString(st.ServerURL)
 
 	b.WriteString(renderPageHead("Guix Pull with All Prebuilts Ready"))
-	b.WriteString(renderPageHeader("main", st.RequireNonguix))
+	b.WriteString(renderPageHeader(st.RequireNonguix))
 
 	b.WriteString(`<main>`)
 	b.WriteString(renderReadyCommitBlock(ov, escServerURL, st.RequireNonguix))
 	b.WriteString(renderCLIExamplesBlock(escBaseURL, st.RequireNonguix))
-	b.WriteString(`</main>`)
-
-	b.WriteString(renderFooter(st))
-	b.WriteString(renderCommonScripts(false))
-	return b.String()
-}
-
-// renderHTMLStatusPage renders the detailed "/status" page containing summary cards,
-// the interactive package resolver form, and the recent evaluations table.
-func renderHTMLStatusPage(st dashboardState) string {
-	var b strings.Builder
-	ov := st.BySystem[st.ActiveSystem]
-	escServerURL := html.EscapeString(st.ServerURL)
-
-	defaultMaxPending := 0
-	if ov.StrictReady == nil && ov.BestAvailable != nil {
-		defaultMaxPending = ov.BestAvailable.PendingCount
-	}
-
-	b.WriteString(renderPageHead("Guix Pull with All Prebuilts Ready - Status"))
-	b.WriteString(renderPageHeader("status", st.RequireNonguix))
-
-	b.WriteString(`<main>`)
-	b.WriteString(`<div class="cards">`)
-	b.WriteString(renderReadyCommitCardCompact(ov, escServerURL, st.RequireNonguix))
-	b.WriteString(renderLatestEvalCard(ov, escServerURL))
-	b.WriteString(`</div>`)
-
-	b.WriteString(renderInteractiveResolverPanel(defaultMaxPending, st.RequireNonguix))
 	b.WriteString(renderEvaluationsTable(ov, escServerURL, st.RequireNonguix))
 	b.WriteString(`</main>`)
 
 	b.WriteString(renderFooter(st))
-	b.WriteString(renderCommonScripts(true))
+	b.WriteString(renderCommonScripts())
 	return b.String()
 }
 
@@ -682,11 +654,7 @@ function formatLocalTimes() {
 `
 }
 
-func renderPageHeader(currentTab string, requireNonguix bool) string {
-	statusClass := ""
-	if currentTab == "status" {
-		statusClass = " class=\"active\""
-	}
+func renderPageHeader(requireNonguix bool) string {
 	querySuffix := ""
 	if requireNonguix {
 		querySuffix = "?additional_channels=nonguix"
@@ -695,11 +663,8 @@ func renderPageHeader(currentTab string, requireNonguix bool) string {
 	return fmt.Sprintf(`
 	<header class="site-header-container">
 		<strong class="site-header-element-left"><a href="/%s">Guix Pull with All Prebuilts Ready</a></strong>
-		<nav class="site-header-element-right">
-			<a href="/status%s"%s>Status</a>
-		</nav>
 	</header>
-`, querySuffix, querySuffix, statusClass)
+`, querySuffix)
 }
 
 func renderReadyCommitBlock(ov systemOverview, escServerURL string, requireNonguix bool) string {
@@ -876,170 +841,6 @@ func renderCLIExamplesBlock(escBaseURL string, requireNonguix bool) string {
 	return b.String()
 }
 
-func renderReadyCommitCardCompact(ov systemOverview, escServerURL string, requireNonguix bool) string {
-	var b strings.Builder
-	guixStyle := ""
-	ngStyle := ` style="display:none;"`
-	if requireNonguix {
-		guixStyle = ` style="display:none;"`
-		ngStyle = ""
-	}
-	b.WriteString(`<div class="card">`)
-	fmt.Fprintf(&b, `<div id="status-commit-guix"%s>`, guixStyle)
-	if ov.StrictReady != nil {
-		r := ov.StrictReady
-		short := shortCommit(r.Commit)
-		dateHTML := formatEvalDateHTML(r.EvaluationDate)
-		fmt.Fprintf(&b, `
-			<div class="card-title"><span>Latest Ready Commit</span></div>
-			<div class="card-commit mono">
-				<a href="https://codeberg.org/guix/guix/commit/%s" target="_blank" rel="noopener">%s</a>
-				<button type="button" class="btn" data-copy="%s" onclick="copyFromBtn(this)">Copy</button>
-			</div>
-			<div class="card-meta">Eval <a href="%s/eval/%d" target="_blank" rel="noopener">#%d</a>%s &middot; %d behind &middot; %d built</div>`,
-			html.EscapeString(r.Commit), html.EscapeString(short),
-			html.EscapeString(r.Commit),
-			escServerURL, r.EvaluationID, r.EvaluationID, dateHTML, r.EvaluationsBehind, r.SucceededCount,
-		)
-	} else if ov.BestAvailable != nil {
-		r := ov.BestAvailable
-		short := shortCommit(r.Commit)
-		dateHTML := formatEvalDateHTML(r.EvaluationDate)
-		fmt.Fprintf(&b, `
-			<div class="card-title"><span>Closest to Ready (%d Pending)</span><span class="badge badge-warn">No 0-pending in last %d</span></div>
-			<div class="card-commit mono">
-				<a href="https://codeberg.org/guix/guix/commit/%s" target="_blank" rel="noopener">%s</a>
-				<button type="button" class="btn" data-copy="%s" onclick="copyFromBtn(this)">Copy</button>
-			</div>
-			<div class="card-meta">Eval <a href="%s/eval/%d" target="_blank" rel="noopener">#%d</a>%s &middot; %d behind &middot; %d built</div>`,
-			r.PendingCount, len(ov.Evaluations),
-			html.EscapeString(r.Commit), html.EscapeString(short),
-			html.EscapeString(r.Commit),
-			escServerURL, r.EvaluationID, r.EvaluationID, dateHTML, r.EvaluationsBehind, r.SucceededCount,
-		)
-	} else {
-		b.WriteString(`
-			<div class="card-title"><span>Latest Ready Commit</span><span class="badge badge-warn">Warming up</span></div>
-			<div class="card-meta">Initial evaluation sync from Cuirass is in progress.</div>`)
-	}
-	b.WriteString(`</div>`)
-
-	fmt.Fprintf(&b, `<div id="status-commit-nonguix"%s>`, ngStyle)
-	ngRes := ov.NonguixStrictReady
-	isNgFallback := false
-	if ngRes == nil && ov.NonguixBestAvailable != nil {
-		ngRes = ov.NonguixBestAvailable
-		isNgFallback = true
-	}
-	if ngRes != nil {
-		shortGuix := shortCommit(ngRes.Commit)
-		guixDateHTML := formatEvalDateHTML(ngRes.EvaluationDate)
-		titleBadge := `<span class="badge badge-ok">guix + nonguix</span>`
-		if isNgFallback {
-			titleBadge = fmt.Sprintf(`<span class="badge badge-warn">%d Pending</span>`, ngRes.PendingCount)
-		}
-		fmt.Fprintf(&b, `
-			<div class="card-title"><span>Latest Ready Commit (Coordinated)</span>%s</div>
-			<div class="card-commit mono">
-				<span style="font-size:0.78rem;color:var(--muted);">guix:</span> <a href="https://codeberg.org/guix/guix/commit/%s" target="_blank" rel="noopener">%s</a>
-				<button type="button" class="btn" data-copy="%s" onclick="copyFromBtn(this)">Copy</button>
-			</div>
-			<div class="card-meta">Eval <a href="%s/eval/%d" target="_blank" rel="noopener">#%d</a>%s &middot; %d behind &middot; %d built</div>`,
-			titleBadge,
-			html.EscapeString(ngRes.Commit), html.EscapeString(shortGuix),
-			html.EscapeString(ngRes.Commit),
-			escServerURL, ngRes.EvaluationID, ngRes.EvaluationID, guixDateHTML, ngRes.EvaluationsBehind, ngRes.SucceededCount,
-		)
-		for _, ch := range ngRes.AdditionalChannels {
-			shortCh := shortCommit(ch.Commit)
-			chDateHTML := formatEvalDateHTML(ch.EvaluationDate)
-			chServer := html.EscapeString(ch.ServerURL)
-			fmt.Fprintf(&b, `
-			<div class="card-commit mono" style="margin-top:0.35rem;">
-				<span style="font-size:0.78rem;color:var(--muted);">%s:</span> <a href="https://gitlab.com/nonguix/nonguix/-/commit/%s" target="_blank" rel="noopener">%s</a>
-				<button type="button" class="btn" data-copy="%s" onclick="copyFromBtn(this)">Copy</button>
-			</div>
-			<div class="card-meta">Eval <a href="%s/eval/%d" target="_blank" rel="noopener">#%d</a>%s &middot; %d behind &middot; %d built</div>`,
-				html.EscapeString(ch.Channel),
-				html.EscapeString(ch.Commit), html.EscapeString(shortCh),
-				html.EscapeString(ch.Commit),
-				chServer, ch.EvaluationID, ch.EvaluationID, chDateHTML, ch.EvaluationsBehind, ch.SucceededCount,
-			)
-		}
-	} else {
-		b.WriteString(`
-			<div class="card-title"><span>Latest Ready Commit (Coordinated)</span><span class="badge badge-warn">Warming up</span></div>
-			<div class="card-meta">Waiting for coordinated nonguix + guix evaluation data...</div>`)
-	}
-	b.WriteString(`</div>`)
-	b.WriteString(`</div>`)
-	return b.String()
-}
-
-func renderLatestEvalCard(ov systemOverview, escServerURL string) string {
-	var b strings.Builder
-	b.WriteString(`<div class="card">`)
-	if ov.LatestEval != nil {
-		le := ov.LatestEval
-		short := shortCommit(le.Commit)
-		pct := 0.0
-		if le.TotalJobs > 0 {
-			pct = float64(le.SucceededJobs) * 100.0 / float64(le.TotalJobs)
-		}
-		fmt.Fprintf(&b, `
-			<div class="card-title"><span>Latest Master Evaluation</span><span class="badge badge-neutral">%.1f%% Built</span></div>
-			<div class="card-commit mono">
-				<a href="https://codeberg.org/guix/guix/commit/%s" target="_blank" rel="noopener">%s</a>
-				<button type="button" class="btn" data-copy="%s" onclick="copyFromBtn(this)">Copy</button>
-			</div>
-			<div class="card-meta">Eval <a href="%s/eval/%d" target="_blank" rel="noopener">#%d</a> &middot; %d ok / %d pend / %d fail</div>`,
-			pct,
-			html.EscapeString(le.Commit), html.EscapeString(short),
-			html.EscapeString(le.Commit),
-			escServerURL, le.EvaluationID, le.EvaluationID, le.SucceededJobs, le.PendingJobs, le.FailedJobs,
-		)
-	} else {
-		b.WriteString(`
-			<div class="card-title"><span>Latest Master Evaluation</span></div>
-			<div class="card-meta">Waiting for evaluation data...</div>`)
-	}
-	b.WriteString(`</div>`)
-	return b.String()
-}
-
-func renderInteractiveResolverPanel(defaultMaxPending int, requireNonguix bool) string {
-	checkedAttr := ""
-	if requireNonguix {
-		checkedAttr = " checked"
-	}
-	return fmt.Sprintf(`
-	<div class="panel">
-		<h2>Interactive Commit &amp; Package Resolver</h2>
-		<p class="sub">Find the newest commit where your specific packages (or the whole evaluation) have substitutes ready.</p>
-		<form id="finder-form" onsubmit="runFinder(event)">
-			<div class="form-grid">
-				<div class="field">
-					<label for="f-pkgs">Packages (comma or space separated, leave empty for whole-evaluation mode)</label>
-					<input type="text" id="f-pkgs" name="pkgs" class="mono" placeholder="e.g. emacs, git, linux">
-				</div>
-				<div class="field" style="width:150px;">
-					<label for="f-max-pending">Max Pending (whole-eval)</label>
-					<input type="number" id="f-max-pending" name="max_pending" min="0" max="100000" value="%d" class="mono">
-				</div>
-				<div>
-					<button type="submit" class="primary" style="padding:0.52rem 1rem;font-size:0.9rem;">Find Ready Commit</button>
-				</div>
-			</div>
-			<div class="checkboxes">
-				<label><input type="checkbox" id="f-additional-nonguix"%s onchange="toggleStatusNonguix(this.checked)"> Require <code>nonguix</code> channel</label>
-				<label><input type="checkbox" id="f-allow-failed"> Allow failed builds in package mode</label>
-			</div>
-		</form>
-		<div id="finder-result"></div>
-	</div>
-`, defaultMaxPending, checkedAttr)
-}
-
 func renderEvaluationsTable(ov systemOverview, escServerURL string, requireNonguix bool) string {
 	var b strings.Builder
 	ngColStyle := ` style="display:none;"`
@@ -1159,10 +960,8 @@ func renderFooter(st dashboardState) string {
 `, escServerURL, escServerURL, lastSyncHTML)
 }
 
-func renderCommonScripts(includeFinder bool) string {
-	var b strings.Builder
-
-	b.WriteString(`
+func renderCommonScripts() string {
+	return `
 <script>
 formatLocalTimes();
 
@@ -1204,15 +1003,6 @@ function fallbackCopy(text, onDone) {
 	}
 }
 
-function escapeHtml(s) {
-	return String(s)
-		.replace(/&/g, "&amp;")
-		.replace(/</g, "&lt;")
-		.replace(/>/g, "&gt;")
-		.replace(/"/g, "&quot;")
-		.replace(/'/g, "&#39;");
-}
-
 function syncNonguixURLParam(checked) {
 	if (!window.history || !window.history.replaceState) return;
 	const url = new URL(window.location.href);
@@ -1223,10 +1013,8 @@ function syncNonguixURLParam(checked) {
 	}
 	window.history.replaceState(null, "", url.pathname + url.search + url.hash);
 	const homeLink = document.querySelector(".site-header-element-left a");
-	const statusLink = document.querySelector(".site-header-element-right a");
 	const suffix = checked ? "?additional_channels=nonguix" : "";
 	if (homeLink) homeLink.setAttribute("href", "/" + suffix);
-	if (statusLink) statusLink.setAttribute("href", "/status" + suffix);
 }
 
 function toggleMainNonguix(checked) {
@@ -1242,108 +1030,15 @@ function toggleMainNonguix(checked) {
 		cliGuix.style.display = checked ? "none" : "flex";
 		cliNg.style.display = checked ? "flex" : "none";
 	}
-	syncNonguixURLParam(checked);
-}
-
-function toggleStatusNonguix(checked) {
-	const cGuix = document.getElementById("status-commit-guix");
-	const cNg = document.getElementById("status-commit-nonguix");
-	if (cGuix && cNg) {
-		cGuix.style.display = checked ? "none" : "block";
-		cNg.style.display = checked ? "block" : "none";
-	}
 	document.querySelectorAll(".col-nonguix").forEach((el) => {
 		el.style.display = checked ? "" : "none";
 	});
 	syncNonguixURLParam(checked);
 }
-`)
-
-	if includeFinder {
-		b.WriteString(`
-async function runFinder(ev) {
-	ev.preventDefault();
-	const out = document.getElementById("finder-result");
-	out.style.display = "block";
-	out.innerHTML = '<span class="badge badge-warn">Resolving...</span>';
-
-	const pkgs = document.getElementById("f-pkgs").value.trim();
-	const maxPending = document.getElementById("f-max-pending").value || "0";
-	const reqNonguix = document.getElementById("f-additional-nonguix") && document.getElementById("f-additional-nonguix").checked;
-	const allowFailed = document.getElementById("f-allow-failed").checked;
-
-	const params = new URLSearchParams();
-	params.set("system", "x86_64-linux");
-	if (pkgs) {
-		params.set("pkgs", pkgs);
-	} else {
-		params.set("max_pending", maxPending);
-	}
-	if (reqNonguix) params.set("additional_channels", "nonguix");
-	if (allowFailed) params.set("allow_failed", "true");
-
-	try {
-		const [statusResp, scmResp] = await Promise.all([
-			fetch("/status?" + params.toString(), {
-				headers: { "Accept": "application/json" }
-			}),
-			fetch("/channels.scm?" + params.toString())
-		]);
-		const data = await statusResp.json();
-		if (!statusResp.ok) {
-			out.innerHTML = '<div class="badge badge-err">Error: ' + escapeHtml(data.error || statusResp.statusText) + '</div>';
-			return;
-		}
-		const scmText = await scmResp.text();
-		let untrackedHtml = "";
-		if (data.untracked_packages && data.untracked_packages.length > 0) {
-			untrackedHtml = '<div style="margin-top:0.4rem;font-size:0.82rem;color:var(--warn-text);">Skipped untracked/local packages: <code>' +
-				escapeHtml(data.untracked_packages.join(", ")) + '</code></div>';
-		}
-		let addChHtml = "";
-		if (data.additional_channels && data.additional_channels.length > 0) {
-			data.additional_channels.forEach((ch) => {
-				addChHtml += '<div style="margin-top:0.35rem;"><strong>Resolved ' + escapeHtml(ch.channel) + ' Commit:</strong> ' +
-					'<code class="mono">' + escapeHtml(ch.commit) + '</code> ' +
-					'<span class="badge badge-ok">Eval #' + ch.evaluation_id + ' (' + ch.evaluations_behind + ' behind)</span></div>';
-			});
-		}
-		const channelsQueryUrl = window.location.origin + "/channels.scm?" + params.toString();
-		const guixPullCmd = 'guix pull -C <(curl -fsSL "' + channelsQueryUrl + '")';
-		const downloadedChannelsExpr = '(downloaded-channels\n  "' + channelsQueryUrl + '")';
-		out.innerHTML =
-			'<div style="padding:0.85rem;background:var(--code-bg);border:1px solid var(--border);border-radius:6px;">' +
-				'<div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:0.5rem;">' +
-					'<div>' +
-						'<div><strong>Resolved guix Commit:</strong> <code class="mono">' + escapeHtml(data.commit) + '</code> ' +
-						'<span class="badge badge-ok">Eval #' + data.evaluation_id + ' (' + data.evaluations_behind + ' behind)</span></div>' +
-						addChHtml +
-					'</div>' +
-					'<div class="btn-row">' +
-						'<button type="button" data-copy="' + escapeHtml(data.commit) + '" onclick="copyFromBtn(this)">Copy Commit</button>' +
-						'<button type="button" data-copy="' + escapeHtml(guixPullCmd) + '" onclick="copyFromBtn(this)">Copy guix pull</button>' +
-						'<button type="button" data-copy="' + escapeHtml(scmText) + '" onclick="copyFromBtn(this)">Copy channels.scm</button>' +
-					'</div>' +
-				'</div>' +
-				untrackedHtml +
-				'<pre class="code-box" style="background:var(--bg);">' + escapeHtml(scmText) + '</pre>' +
-				'<div style="margin-top:0.6rem;font-size:0.85rem;">' +
-					'<div style="margin-bottom:0.25rem;color:var(--muted);">Or track automatically in <code>~/.config/guix/channels.scm</code> via <code>downloaded-channels</code>:</div>' +
-					'<pre class="code-box" style="background:var(--bg);">' + escapeHtml(downloadedChannelsExpr) + '</pre>' +
-				'</div>' +
-			'</div>';
-	} catch (err) {
-		out.innerHTML = '<div class="badge badge-err">Request failed: ' + escapeHtml(String(err)) + '</div>';
-	}
-}
-`)
-	}
-
-	b.WriteString(`</script>
+</script>
 </body>
 </html>
-`)
-	return b.String()
+`
 }
 
 func shortCommit(commit string) string {

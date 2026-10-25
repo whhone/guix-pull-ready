@@ -171,7 +171,12 @@ func TestDashboardHTMLAndPlainIndex(t *testing.T) {
 		"Guix Pull with All Prebuilts Ready",
 		"Latest Commit with All Prebuilts Ready on Substitutes",
 		"Usages",
-		`<a href="/status">Status</a>`,
+		"Recent Master Evaluations",
+		"guix commit",
+		"Date (Local)",
+		`class="local-time" data-utc="`,
+		"#700",
+		"#699",
 		`<pre class="mono">guix pull -C &lt;(curl -fsSL "http://example.com/channels.scm")</pre>`,
 		`data-copy="guix pull -C &lt;(curl -fsSL &quot;http://example.com/channels.scm&quot;)" onclick="copyFromBtn(this)"`,
 		`data-copy="ffff6666eeee7777dddd8888cccc9999bbbb0000" onclick="copyFromBtn(this)">Copy Commit</button>`,
@@ -185,10 +190,10 @@ func TestDashboardHTMLAndPlainIndex(t *testing.T) {
 		}
 	}
 
-	// Must NOT contain detailed status/resolver/evaluations table, poll badges, or arch switcher on the overview page
+	// Must NOT contain removed status link, interactive resolver, poll badges, or arch switcher on the overview page
 	for _, unwanted := range []string{
+		`<a href="/status">Status</a>`,
 		"Interactive Commit &amp; Package Resolver",
-		"Recent Master Evaluations",
 		"Latest Master Evaluation",
 		"Evaluations:",
 		"Poller Idle",
@@ -221,10 +226,10 @@ func TestDashboardHTMLAndPlainIndex(t *testing.T) {
 	}
 }
 
-func TestStatusPageHTMLAndContentNegotiation(t *testing.T) {
+func TestStatusEndpointAlwaysReturnsJSON(t *testing.T) {
 	srv := setupTestServer(t)
 
-	// 1. Browser request to /status (Accept: text/html) -> HTML Status page
+	// 1. Browser request to /status (Accept: text/html) -> JSON API response
 	req := httptest.NewRequest(http.MethodGet, "/status", nil)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml")
 	rec := httptest.NewRecorder()
@@ -232,49 +237,6 @@ func TestStatusPageHTMLAndContentNegotiation(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-	htmlBody := rec.Body.String()
-	for _, want := range []string{
-		"Guix Pull with All Prebuilts Ready - Status",
-		`class="active">Status</a>`,
-		"Latest Ready Commit",
-		"Latest Master Evaluation",
-		"Interactive Commit &amp; Package Resolver",
-		"Recent Master Evaluations",
-		"guix commit",
-		"Date (Local)",
-		`class="local-time" data-utc="`,
-		"#700",
-		"#699",
-	} {
-		if !strings.Contains(htmlBody, want) {
-			t.Fatalf("HTML status page missing %q", want)
-		}
-	}
-
-	// Clean header check: no raw /healthz, /evaluations, "Evaluations:", "Poller Idle", or arch switcher
-	for _, unwanted := range []string{
-		"Evaluations:",
-		"Poller Idle",
-		"Syncing Cuirass",
-		"arch-bar",
-		"aarch64-linux",
-		`/healthz" class="btn mono"`,
-		`/evaluations?system=`,
-	} {
-		if strings.Contains(htmlBody, unwanted) {
-			t.Fatalf("HTML status page should not contain %q", unwanted)
-		}
-	}
-
-	// 2. curl request to /status -> JSON API response
-	req = httptest.NewRequest(http.MethodGet, "/status", nil)
-	req.Header.Set("User-Agent", "curl/8.5.0")
-	rec = httptest.NewRecorder()
-	srv.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("curl /status status = %d, want 200", rec.Code)
 	}
 	var res resolver.Result
 	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
@@ -284,9 +246,9 @@ func TestStatusPageHTMLAndContentNegotiation(t *testing.T) {
 		t.Fatalf("got eval %d, want 699", res.EvaluationID)
 	}
 
-	// 3. Package query to /status?pkgs=emacs,git -> JSON API response
+	// 2. Package query to /status?pkgs=emacs,git -> JSON API response
 	req = httptest.NewRequest(http.MethodGet, "/status?pkgs=emacs,git", nil)
-	req.Header.Set("Accept", "text/html") // Even with text/html, package query should return JSON
+	req.Header.Set("Accept", "text/html")
 	rec = httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -451,7 +413,15 @@ func TestAdditionalChannelsNonguixAPI(t *testing.T) {
 		t.Fatalf("unexpected additional_channels in /status response: %+v", statusRes.AdditionalChannels)
 	}
 
-	// 4. Browser GET /?additional_channels=nonguix and GET /status?additional_channels=nonguix -> pre-checks nonguix toggle
+	// 4. Browser GET / and GET /?additional_channels=nonguix -> toggles nonguix state and column
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Accept", "text/html")
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if !strings.Contains(rec.Body.String(), `<th class="col-nonguix" style="display:none;"><a href="https://cuirass.nonguix.org/jobset/nonguix" target="_blank" rel="noopener">nonguix/nonguix</a></th>`) {
+		t.Fatalf("home HTML without additional_channels should hide nonguix column by default")
+	}
+
 	req = httptest.NewRequest(http.MethodGet, "/?additional_channels=nonguix", nil)
 	req.Header.Set("Accept", "text/html")
 	rec = httptest.NewRecorder()
@@ -463,35 +433,13 @@ func TestAdditionalChannelsNonguixAPI(t *testing.T) {
 	if !strings.Contains(homeHTML, `id="main-nonguix-toggle" checked`) ||
 		!strings.Contains(homeHTML, `<div id="main-commit-guix" style="display:none;">`) ||
 		!strings.Contains(homeHTML, `<div id="main-commit-nonguix">`) ||
-		!strings.Contains(homeHTML, `https://gitlab.com/nonguix/nonguix/#substitutes-for-nonguix`) {
-		t.Fatalf("home HTML with ?additional_channels=nonguix did not pre-select nonguix state or include substitute setup link")
-	}
-
-	req = httptest.NewRequest(http.MethodGet, "/status", nil)
-	req.Header.Set("Accept", "text/html")
-	rec = httptest.NewRecorder()
-	srv.ServeHTTP(rec, req)
-	if !strings.Contains(rec.Body.String(), `<th class="col-nonguix" style="display:none;"><a href="https://cuirass.nonguix.org/jobset/nonguix" target="_blank" rel="noopener">nonguix/nonguix</a></th>`) {
-		t.Fatalf("status HTML without additional_channels should hide nonguix column by default")
-	}
-
-	req = httptest.NewRequest(http.MethodGet, "/status?additional_channels=nonguix", nil)
-	req.Header.Set("Accept", "text/html")
-	rec = httptest.NewRecorder()
-	srv.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-	statusHTML := rec.Body.String()
-	if !strings.Contains(statusHTML, `id="f-additional-nonguix" checked`) ||
-		!strings.Contains(statusHTML, `<div id="status-commit-guix" style="display:none;">`) ||
-		!strings.Contains(statusHTML, `<div id="status-commit-nonguix">`) ||
-		!strings.Contains(statusHTML, `<th><a href="https://ci.guix.gnu.org/jobset/guix" target="_blank" rel="noopener">guix/guix</a></th>`) ||
-		!strings.Contains(statusHTML, `<th><a href="https://ci.guix.gnu.org/jobset/master" target="_blank" rel="noopener">guix/master</a></th>`) ||
-		!strings.Contains(statusHTML, `<th class="col-nonguix"><a href="https://cuirass.nonguix.org/jobset/nonguix" target="_blank" rel="noopener">nonguix/nonguix</a></th>`) ||
-		!strings.Contains(statusHTML, `https://cuirass.nonguix.org/eval/55`) ||
-		!strings.Contains(statusHTML, `<strong>#55</strong>`) {
-		t.Fatalf("status HTML with ?additional_channels=nonguix did not render expected nonguix state/column")
+		!strings.Contains(homeHTML, `https://gitlab.com/nonguix/nonguix/#substitutes-for-nonguix`) ||
+		!strings.Contains(homeHTML, `<th><a href="https://ci.guix.gnu.org/jobset/guix" target="_blank" rel="noopener">guix/guix</a></th>`) ||
+		!strings.Contains(homeHTML, `<th><a href="https://ci.guix.gnu.org/jobset/master" target="_blank" rel="noopener">guix/master</a></th>`) ||
+		!strings.Contains(homeHTML, `<th class="col-nonguix"><a href="https://cuirass.nonguix.org/jobset/nonguix" target="_blank" rel="noopener">nonguix/nonguix</a></th>`) ||
+		!strings.Contains(homeHTML, `https://cuirass.nonguix.org/eval/55`) ||
+		!strings.Contains(homeHTML, `<strong>#55</strong>`) {
+		t.Fatalf("home HTML with ?additional_channels=nonguix did not pre-select nonguix state, table column, or substitute setup link")
 	}
 
 	// 5. GET /commit?additional_channels=invalid -> 400 Bad Request
