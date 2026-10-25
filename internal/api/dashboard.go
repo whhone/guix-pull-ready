@@ -779,7 +779,7 @@ func renderEvaluationsTable(ov systemOverview, escServerURL string, requireNongu
 				<thead>
 					<tr>
 						<th>guix commit</th>
-						<th>Date (Local)</th>
+						<th>Committed</th>
 						<th><a href="https://ci.guix.gnu.org/jobset/master" target="_blank" rel="noopener">guix/master</a></th>
 						<th><a href="https://ci.guix.gnu.org/jobset/guix" target="_blank" rel="noopener">guix/guix</a></th>
 						<th class="col-nonguix"%s><a href="https://cuirass.nonguix.org/jobset/nonguix" target="_blank" rel="noopener">nonguix/nonguix</a></th>

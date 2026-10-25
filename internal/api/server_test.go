@@ -173,7 +173,7 @@ func TestDashboardHTMLAndPlainIndex(t *testing.T) {
 		"Usage",
 		"Recent Master Evaluations",
 		"guix commit",
-		"Date (Local)",
+		"Committed",
 		`class="local-time" data-utc="`,
 		"#700",
 		"#699",
