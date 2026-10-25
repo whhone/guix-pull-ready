@@ -239,11 +239,11 @@ func TestStatusPageHTMLAndContentNegotiation(t *testing.T) {
 		"Latest Master Evaluation",
 		"Interactive Commit &amp; Package Resolver",
 		"Recent Master Evaluations",
+		"guix commit",
 		"Date (Local)",
 		`class="local-time" data-utc="`,
 		"#700",
 		"#699",
-		"libreoffice",
 	} {
 		if !strings.Contains(htmlBody, want) {
 			t.Fatalf("HTML status page missing %q", want)
@@ -299,7 +299,7 @@ func TestStatusPageHTMLAndContentNegotiation(t *testing.T) {
 		t.Fatalf("got eval %d, want 700", pkgRes.EvaluationID)
 	}
 }
-func TestRequirePullDefaultsAndOverrides(t *testing.T) {
+func TestRequirePullAlwaysEnforced(t *testing.T) {
 	st, err := store.Open(":memory:", "https://ci.guix.gnu.org", []string{"x86_64-linux"})
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
@@ -326,7 +326,7 @@ func TestRequirePullDefaultsAndOverrides(t *testing.T) {
 	_ = st.Save()
 	srv := NewServer(st, nil, nil)
 
-	// 1. By default, require_pull is true, so Eval 801 is skipped and Eval 800 is selected
+	// 1. Whole-eval mode: Eval 801 is skipped because pull is not ready, and Eval 800 is selected
 	req := httptest.NewRequest(http.MethodGet, "/commit", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
@@ -337,15 +337,15 @@ func TestRequirePullDefaultsAndOverrides(t *testing.T) {
 		t.Fatalf("got commit %q, want eval 800 commit (77771111...)", got)
 	}
 
-	// 2. With require_pull=false, Eval 801 is accepted
-	req = httptest.NewRequest(http.MethodGet, "/commit?require_pull=false", nil)
+	// 2. Package mode: Eval 801 is also skipped because pull is not ready, and Eval 800 is selected
+	req = httptest.NewRequest(http.MethodGet, "/commit?pkgs=emacs", nil)
 	rec = httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if got := strings.TrimSpace(rec.Body.String()); got != "8888111122223333444455556666777788889999" {
-		t.Fatalf("got commit %q, want eval 801 commit (88881111...)", got)
+	if got := strings.TrimSpace(rec.Body.String()); got != "7777111122223333444455556666777788889999" {
+		t.Fatalf("got commit %q, want eval 800 commit (77771111...)", got)
 	}
 }
 
@@ -460,15 +460,16 @@ func TestAdditionalChannelsNonguixAPI(t *testing.T) {
 	homeHTML := rec.Body.String()
 	if !strings.Contains(homeHTML, `id="main-nonguix-toggle" checked`) ||
 		!strings.Contains(homeHTML, `<div id="main-commit-guix" style="display:none;">`) ||
-		!strings.Contains(homeHTML, `<div id="main-commit-nonguix">`) {
-		t.Fatalf("home HTML with ?additional_channels=nonguix did not pre-select nonguix state")
+		!strings.Contains(homeHTML, `<div id="main-commit-nonguix">`) ||
+		!strings.Contains(homeHTML, `https://gitlab.com/nonguix/nonguix/#substitutes-for-nonguix`) {
+		t.Fatalf("home HTML with ?additional_channels=nonguix did not pre-select nonguix state or include substitute setup link")
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/status", nil)
 	req.Header.Set("Accept", "text/html")
 	rec = httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
-	if !strings.Contains(rec.Body.String(), `<th class="col-nonguix" style="display:none;">nonguix</th>`) {
+	if !strings.Contains(rec.Body.String(), `<th class="col-nonguix" style="display:none;"><a href="https://cuirass.nonguix.org/jobset/nonguix" target="_blank" rel="noopener">nonguix/nonguix</a></th>`) {
 		t.Fatalf("status HTML without additional_channels should hide nonguix column by default")
 	}
 
@@ -483,9 +484,11 @@ func TestAdditionalChannelsNonguixAPI(t *testing.T) {
 	if !strings.Contains(statusHTML, `id="f-additional-nonguix" checked`) ||
 		!strings.Contains(statusHTML, `<div id="status-commit-guix" style="display:none;">`) ||
 		!strings.Contains(statusHTML, `<div id="status-commit-nonguix">`) ||
-		!strings.Contains(statusHTML, `<th class="col-nonguix">nonguix</th>`) ||
+		!strings.Contains(statusHTML, `<th><a href="https://ci.guix.gnu.org/jobset/guix" target="_blank" rel="noopener">guix/guix</a></th>`) ||
+		!strings.Contains(statusHTML, `<th><a href="https://ci.guix.gnu.org/jobset/master" target="_blank" rel="noopener">guix/master</a></th>`) ||
+		!strings.Contains(statusHTML, `<th class="col-nonguix"><a href="https://cuirass.nonguix.org/jobset/nonguix" target="_blank" rel="noopener">nonguix/nonguix</a></th>`) ||
 		!strings.Contains(statusHTML, `https://cuirass.nonguix.org/eval/55`) ||
-		!strings.Contains(statusHTML, `Ready (#55)`) {
+		!strings.Contains(statusHTML, `<strong>#55</strong>`) {
 		t.Fatalf("status HTML with ?additional_channels=nonguix did not render expected nonguix state/column")
 	}
 

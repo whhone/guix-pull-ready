@@ -149,7 +149,10 @@ func buildSystemOverview(snap *store.Snapshot, sys string, limit int) systemOver
 				item.NonguixEvalID = ngEv.ID
 				item.NonguixCommit = ngEv.Commit
 				item.NonguixReady = ngData.PendingJobs == 0
+				item.NonguixTotalJobs = ngData.TotalJobs
+				item.NonguixSucceededJobs = ngData.SucceededJobs
 				item.NonguixPendingJobs = ngData.PendingJobs
+				item.NonguixFailedJobs = ngData.FailedJobs
 				item.NonguixServerURL = ngServerURL
 			}
 			if item.NonguixReady {
@@ -299,350 +302,350 @@ func renderPageHead(title string) string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>` + html.EscapeString(title) + `</title>
 <style>
-  :root {
-    --bg: #ffffff;
-    --border: #e2e8f0;
-    --text: #0f172a;
-    --muted: #475569;
-    --accent: #2563eb;
-    --accent-hover: #1d4ed8;
-    --ok-bg: #dcfce7;
-    --ok-text: #15803d;
-    --ok-bar: #22c55e;
-    --warn-bg: #fef9c3;
-    --warn-text: #a16207;
-    --warn-bar: #eab308;
-    --err-bg: #fee2e2;
-    --err-text: #b91c1c;
-    --err-bar: #ef4444;
-    --code-bg: #f1f5f9;
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0 auto;
-    max-width: 1120px;
-    padding: 1.5rem 1rem 3rem;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    background: var(--bg);
-    color: var(--text);
-    line-height: 1.5;
-  }
-  code, pre, .mono {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  }
-  a { color: var(--accent); text-decoration: none; }
-  a:hover { text-decoration: underline; }
+	:root {
+		--bg: #ffffff;
+		--border: #e2e8f0;
+		--text: #0f172a;
+		--muted: #475569;
+		--accent: #2563eb;
+		--accent-hover: #1d4ed8;
+		--ok-bg: #dcfce7;
+		--ok-text: #15803d;
+		--ok-bar: #22c55e;
+		--warn-bg: #fef9c3;
+		--warn-text: #a16207;
+		--warn-bar: #eab308;
+		--err-bg: #fee2e2;
+		--err-text: #b91c1c;
+		--err-bar: #ef4444;
+		--code-bg: #f1f5f9;
+	}
+	* { box-sizing: border-box; }
+	body {
+		margin: 0 auto;
+		max-width: 1120px;
+		padding: 1.5rem 1rem 3rem;
+		font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+		background: var(--bg);
+		color: var(--text);
+		line-height: 1.5;
+	}
+	code, pre, .mono {
+		font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+	}
+	a { color: var(--accent); text-decoration: none; }
+	a:hover { text-decoration: underline; }
 
-  /* Site Header */
-  header.site-header-container {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    flex-wrap: wrap;
-    padding-bottom: 0.85rem;
-    border-bottom: 1px solid var(--border);
-    margin-bottom: 1.5rem;
-    width: 100%;
-  }
-  .site-header-element-left {
-    font-size: 1.25rem;
-    font-weight: 700;
-  }
-  .site-header-element-left a {
-    color: var(--text);
-    text-decoration: none;
-  }
-  .site-header-element-right {
-    text-align: right;
-    font-size: 0.95rem;
-  }
-  .site-header-element-right a {
-    color: var(--muted);
-    text-decoration: none;
-    font-weight: 500;
-    padding: 0.15rem 0.4rem;
-  }
-  .site-header-element-right a:hover {
-    color: var(--accent);
-    text-decoration: underline;
-  }
-  .site-header-element-right a.active {
-    color: var(--text);
-    font-weight: 700;
-    text-decoration: none;
-  }
-  @media (max-width: 500px) {
-    .site-header-element-left,
-    .site-header-element-right {
-      flex-basis: 100%;
-      text-align: left;
-    }
-    .site-header-element-right {
-      margin-top: 0.4rem;
-    }
-  }
+	/* Site Header */
+	header.site-header-container {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		flex-wrap: wrap;
+		padding-bottom: 0.85rem;
+		border-bottom: 1px solid var(--border);
+		margin-bottom: 1.5rem;
+		width: 100%;
+	}
+	.site-header-element-left {
+		font-size: 1.25rem;
+		font-weight: 700;
+	}
+	.site-header-element-left a {
+		color: var(--text);
+		text-decoration: none;
+	}
+	.site-header-element-right {
+		text-align: right;
+		font-size: 0.95rem;
+	}
+	.site-header-element-right a {
+		color: var(--muted);
+		text-decoration: none;
+		font-weight: 500;
+		padding: 0.15rem 0.4rem;
+	}
+	.site-header-element-right a:hover {
+		color: var(--accent);
+		text-decoration: underline;
+	}
+	.site-header-element-right a.active {
+		color: var(--text);
+		font-weight: 700;
+		text-decoration: none;
+	}
+	@media (max-width: 500px) {
+		.site-header-element-left,
+		.site-header-element-right {
+			flex-basis: 100%;
+			text-align: left;
+		}
+		.site-header-element-right {
+			margin-top: 0.4rem;
+		}
+	}
 
-  /* Main Container */
-  main {
-    width: 100%;
-    display: flex;
-    flex-direction: column;
-    gap: 1.5rem;
-    min-width: 0;
-  }
+	/* Main Container */
+	main {
+		width: 100%;
+		display: flex;
+		flex-direction: column;
+		gap: 1.5rem;
+		min-width: 0;
+	}
 
-  /* Badges */
-  .badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.35rem;
-    padding: 0.2rem 0.55rem;
-    border-radius: 999px;
-    font-size: 0.78rem;
-    font-weight: 600;
-    white-space: nowrap;
-  }
-  .badge-ok { background: var(--ok-bg); color: var(--ok-text); }
-  .badge-warn { background: var(--warn-bg); color: var(--warn-text); }
-  .badge-err { background: var(--err-bg); color: var(--err-text); }
-  .badge-neutral { background: var(--code-bg); color: var(--muted); border: 1px solid var(--border); }
+	/* Badges */
+	.badge {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.35rem;
+		padding: 0.2rem 0.55rem;
+		border-radius: 999px;
+		font-size: 0.78rem;
+		font-weight: 600;
+		white-space: nowrap;
+	}
+	.badge-ok { background: var(--ok-bg); color: var(--ok-text); }
+	.badge-warn { background: var(--warn-bg); color: var(--warn-text); }
+	.badge-err { background: var(--err-bg); color: var(--err-text); }
+	.badge-neutral { background: var(--code-bg); color: var(--muted); border: 1px solid var(--border); }
 
-  /* Cards & Panels */
-  .cards {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-    gap: 1rem;
-    width: 100%;
-  }
-  .card, .panel {
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 1.25rem;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.03);
-    width: 100%;
-    min-width: 0;
-  }
-  .card-title {
-    font-size: 0.82rem;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--muted);
-    font-weight: 600;
-    margin: 0 0 0.5rem;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-  }
-  .card-commit {
-    font-size: 1.05rem;
-    font-weight: 700;
-    margin: 0.25rem 0 0.5rem;
-    word-break: break-all;
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0.5rem;
-    min-width: 0;
-  }
-  .card-meta { font-size: 0.85rem; color: var(--muted); margin-bottom: 0.5rem; }
-  .btn-row { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.5rem; }
-  button, .btn {
-    padding: 0.32rem 0.65rem;
-    font-size: 0.8rem;
-    border-radius: 5px;
-    border: 1px solid var(--border);
-    background: var(--code-bg);
-    color: var(--text);
-    cursor: pointer;
-    font-weight: 500;
-    white-space: nowrap;
-  }
-  button:hover, .btn:hover { background: #e2e8f0; }
-  button.primary {
-    background: var(--accent);
-    color: #ffffff;
-    border-color: var(--accent);
-  }
-  button.primary:hover { background: var(--accent-hover); }
+	/* Cards & Panels */
+	.cards {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+		gap: 1rem;
+		width: 100%;
+	}
+	.card, .panel {
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: 8px;
+		padding: 1.25rem;
+		box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+		width: 100%;
+		min-width: 0;
+	}
+	.card-title {
+		font-size: 0.82rem;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--muted);
+		font-weight: 600;
+		margin: 0 0 0.5rem;
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+	}
+	.card-commit {
+		font-size: 1.05rem;
+		font-weight: 700;
+		margin: 0.25rem 0 0.5rem;
+		word-break: break-all;
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.5rem;
+		min-width: 0;
+	}
+	.card-meta { font-size: 0.85rem; color: var(--muted); margin-bottom: 0.5rem; }
+	.btn-row { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.5rem; }
+	button, .btn {
+		padding: 0.32rem 0.65rem;
+		font-size: 0.8rem;
+		border-radius: 5px;
+		border: 1px solid var(--border);
+		background: var(--code-bg);
+		color: var(--text);
+		cursor: pointer;
+		font-weight: 500;
+		white-space: nowrap;
+	}
+	button:hover, .btn:hover { background: #e2e8f0; }
+	button.primary {
+		background: var(--accent);
+		color: #ffffff;
+		border-color: var(--accent);
+	}
+	button.primary:hover { background: var(--accent-hover); }
 
-  /* Examples List (Code Block + Copy Button) */
-  .examples-list {
-    display: flex;
-    flex-direction: column;
-    gap: 0.85rem;
-    margin-top: 0.75rem;
-    width: 100%;
-    min-width: 0;
-  }
-  .example-item {
-    display: flex;
-    flex-direction: column;
-    gap: 0.3rem;
-    width: 100%;
-    min-width: 0;
-  }
-  .example-desc {
-    font-size: 0.85rem;
-    font-weight: 600;
-    color: var(--muted);
-  }
-  .code-box-row {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    background: var(--code-bg);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 0.4rem 0.6rem;
-    width: 100%;
-    min-width: 0;
-  }
-  .code-box-row pre {
-    margin: 0;
-    flex: 1;
-    min-width: 0;
-    overflow-x: auto;
-    font-size: 0.84rem;
-    background: transparent;
-    padding: 0.2rem 0;
-    border: none;
-    color: var(--text);
-  }
-  .code-box-row button {
-    flex-shrink: 0;
-    padding: 0.3rem 0.7rem;
-    font-size: 0.78rem;
-  }
+	/* Examples List (Code Block + Copy Button) */
+	.examples-list {
+		display: flex;
+		flex-direction: column;
+		gap: 0.85rem;
+		margin-top: 0.75rem;
+		width: 100%;
+		min-width: 0;
+	}
+	.example-item {
+		display: flex;
+		flex-direction: column;
+		gap: 0.3rem;
+		width: 100%;
+		min-width: 0;
+	}
+	.example-desc {
+		font-size: 0.85rem;
+		font-weight: 600;
+		color: var(--muted);
+	}
+	.code-box-row {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		background: var(--code-bg);
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		padding: 0.4rem 0.6rem;
+		width: 100%;
+		min-width: 0;
+	}
+	.code-box-row pre {
+		margin: 0;
+		flex: 1;
+		min-width: 0;
+		overflow-x: auto;
+		font-size: 0.84rem;
+		background: transparent;
+		padding: 0.2rem 0;
+		border: none;
+		color: var(--text);
+	}
+	.code-box-row button {
+		flex-shrink: 0;
+		padding: 0.3rem 0.7rem;
+		font-size: 0.78rem;
+	}
 
-  /* Interactive Resolver Panel */
-  .panel h2 { margin: 0 0 0.35rem; font-size: 1.1rem; }
-  .panel p.sub { margin: 0 0 1rem; color: var(--muted); font-size: 0.88rem; }
-  .form-grid {
-    display: grid;
-    grid-template-columns: 1fr auto auto;
-    gap: 0.75rem;
-    align-items: end;
-  }
-  @media (max-width: 760px) {
-    .form-grid { grid-template-columns: 1fr; }
-  }
-  .field label { display: block; font-size: 0.8rem; font-weight: 600; color: var(--muted); margin-bottom: 0.25rem; }
-  .field input[type="text"], .field input[type="number"] {
-    width: 100%;
-    padding: 0.48rem 0.65rem;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    font-size: 0.9rem;
-    font-family: inherit;
-  }
-  .checkboxes { display: flex; flex-wrap: wrap; gap: 1rem; margin-top: 0.65rem; font-size: 0.86rem; color: var(--muted); }
-  .checkboxes label { display: inline-flex; align-items: center; gap: 0.35rem; cursor: pointer; }
-  #finder-result { margin-top: 1rem; display: none; }
-  pre.code-box {
-    background: var(--code-bg);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 0.75rem 0.9rem;
-    overflow-x: auto;
-    font-size: 0.83rem;
-    margin: 0.5rem 0 0;
-  }
+	/* Interactive Resolver Panel */
+	.panel h2 { margin: 0 0 0.35rem; font-size: 1.1rem; }
+	.panel p.sub { margin: 0 0 1rem; color: var(--muted); font-size: 0.88rem; }
+	.form-grid {
+		display: grid;
+		grid-template-columns: 1fr auto auto;
+		gap: 0.75rem;
+		align-items: end;
+	}
+	@media (max-width: 760px) {
+		.form-grid { grid-template-columns: 1fr; }
+	}
+	.field label { display: block; font-size: 0.8rem; font-weight: 600; color: var(--muted); margin-bottom: 0.25rem; }
+	.field input[type="text"], .field input[type="number"] {
+		width: 100%;
+		padding: 0.48rem 0.65rem;
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		font-size: 0.9rem;
+		font-family: inherit;
+	}
+	.checkboxes { display: flex; flex-wrap: wrap; gap: 1rem; margin-top: 0.65rem; font-size: 0.86rem; color: var(--muted); }
+	.checkboxes label { display: inline-flex; align-items: center; gap: 0.35rem; cursor: pointer; }
+	#finder-result { margin-top: 1rem; display: none; }
+	pre.code-box {
+		background: var(--code-bg);
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		padding: 0.75rem 0.9rem;
+		overflow-x: auto;
+		font-size: 0.83rem;
+		margin: 0.5rem 0 0;
+	}
 
-  /* Evaluations Table */
-  .table-wrap { overflow-x: auto; width: 100%; }
-  table { border-collapse: collapse; width: 100%; font-size: 0.88rem; }
-  th, td { border-bottom: 1px solid var(--border); padding: 0.65rem 0.75rem; text-align: left; vertical-align: middle; }
-  th { background: var(--code-bg); color: var(--muted); font-weight: 600; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.03em; }
-  tr:hover td { background: #f8fafc; }
+	/* Evaluations Table */
+	.table-wrap { overflow-x: auto; width: 100%; }
+	table { border-collapse: collapse; width: 100%; font-size: 0.88rem; }
+	th, td { border-bottom: 1px solid var(--border); padding: 0.65rem 0.75rem; text-align: left; vertical-align: middle; }
+	th { background: var(--code-bg); color: var(--muted); font-weight: 600; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.03em; }
+	tr:hover td { background: #f8fafc; }
 
-  /* Progress Bar */
-  .prog-cell { min-width: 210px; }
-  .prog-bar {
-    display: flex;
-    height: 8px;
-    width: 100%;
-    background: var(--code-bg);
-    border-radius: 999px;
-    overflow: hidden;
-    margin-bottom: 0.3rem;
-  }
-  .prog-ok { background: var(--ok-bar); }
-  .prog-warn { background: var(--warn-bar); }
-  .prog-err { background: var(--err-bar); }
-  .prog-legend { font-size: 0.76rem; color: var(--muted); display: flex; gap: 0.5rem; }
+	/* Progress Bar */
+	.prog-cell { min-width: 210px; }
+	.prog-bar {
+		display: flex;
+		height: 8px;
+		width: 100%;
+		background: var(--code-bg);
+		border-radius: 999px;
+		overflow: hidden;
+		margin-bottom: 0.3rem;
+	}
+	.prog-ok { background: var(--ok-bar); }
+	.prog-warn { background: var(--warn-bar); }
+	.prog-err { background: var(--err-bar); }
+	.prog-legend { font-size: 0.76rem; color: var(--muted); display: flex; gap: 0.5rem; }
 
-  .pending-tags { display: flex; flex-wrap: wrap; gap: 0.25rem; max-width: 290px; }
-  .pkg-tag {
-    background: var(--code-bg);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 0.08rem 0.38rem;
-    font-size: 0.74rem;
-    color: var(--muted);
-  }
-  .local-time[data-utc]:not([data-formatted]) { visibility: hidden; }
+	.pending-tags { display: flex; flex-wrap: wrap; gap: 0.25rem; max-width: 290px; }
+	.pkg-tag {
+		background: var(--code-bg);
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		padding: 0.08rem 0.38rem;
+		font-size: 0.74rem;
+		color: var(--muted);
+	}
+	.local-time[data-utc]:not([data-formatted]) { visibility: hidden; }
 
-  /* Footer */
-  footer {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 0.5rem;
-    margin-top: 2.5rem;
-    padding-top: 1rem;
-    border-top: 1px solid var(--border);
-    font-size: 0.82rem;
-    color: var(--muted);
-    width: 100%;
-  }
-  .site-footer-element-left {
-    flex: 1;
-  }
-  .site-footer-element-right {
-    text-align: right;
-  }
-  @media (max-width: 500px) {
-    .site-footer-element-left,
-    .site-footer-element-right {
-      flex-basis: 100%;
-      text-align: left;
-    }
-  }
+	/* Footer */
+	footer {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+		margin-top: 2.5rem;
+		padding-top: 1rem;
+		border-top: 1px solid var(--border);
+		font-size: 0.82rem;
+		color: var(--muted);
+		width: 100%;
+	}
+	.site-footer-element-left {
+		flex: 1;
+	}
+	.site-footer-element-right {
+		text-align: right;
+	}
+	@media (max-width: 500px) {
+		.site-footer-element-left,
+		.site-footer-element-right {
+			flex-basis: 100%;
+			text-align: left;
+		}
+	}
 </style>
 <noscript><style>.local-time[data-utc] { visibility: visible !important; }</style></noscript>
 <script>
 function formatLocalTimes() {
-  const pad = (n) => String(n).padStart(2, "0");
-  let tzAbbr = "";
-  try {
-    const parts = new Intl.DateTimeFormat(undefined, { timeZoneName: "short" }).formatToParts(new Date());
-    const tzPart = parts.find((p) => p.type === "timeZoneName");
-    if (tzPart && tzPart.value) tzAbbr = " " + tzPart.value;
-  } catch (_) {}
+	const pad = (n) => String(n).padStart(2, "0");
+	let tzAbbr = "";
+	try {
+		const parts = new Intl.DateTimeFormat(undefined, { timeZoneName: "short" }).formatToParts(new Date());
+		const tzPart = parts.find((p) => p.type === "timeZoneName");
+		if (tzPart && tzPart.value) tzAbbr = " " + tzPart.value;
+	} catch (_) {}
 
-  document.querySelectorAll(".local-time[data-utc]:not([data-formatted])").forEach((el) => {
-    const raw = el.getAttribute("data-utc");
-    if (!raw) return;
-    const d = new Date(raw);
-    if (isNaN(d.getTime())) {
-      el.setAttribute("data-formatted", "1");
-      return;
-    }
-    const y = d.getFullYear();
-    const m = pad(d.getMonth() + 1);
-    const day = pad(d.getDate());
-    const hh = pad(d.getHours());
-    const mm = pad(d.getMinutes());
-    if (el.getAttribute("data-show-sec") === "1") {
-      const ss = pad(d.getSeconds());
-      el.textContent = y + "-" + m + "-" + day + " " + hh + ":" + mm + ":" + ss + tzAbbr;
-    } else {
-      el.textContent = y + "-" + m + "-" + day + " " + hh + ":" + mm;
-    }
-    el.setAttribute("data-formatted", "1");
-  });
+	document.querySelectorAll(".local-time[data-utc]:not([data-formatted])").forEach((el) => {
+		const raw = el.getAttribute("data-utc");
+		if (!raw) return;
+		const d = new Date(raw);
+		if (isNaN(d.getTime())) {
+			el.setAttribute("data-formatted", "1");
+			return;
+		}
+		const y = d.getFullYear();
+		const m = pad(d.getMonth() + 1);
+		const day = pad(d.getDate());
+		const hh = pad(d.getHours());
+		const mm = pad(d.getMinutes());
+		if (el.getAttribute("data-show-sec") === "1") {
+			const ss = pad(d.getSeconds());
+			el.textContent = y + "-" + m + "-" + day + " " + hh + ":" + mm + ":" + ss + tzAbbr;
+		} else {
+			el.textContent = y + "-" + m + "-" + day + " " + hh + ":" + mm;
+		}
+		el.setAttribute("data-formatted", "1");
+	});
 }
 </script>
 </head>
@@ -661,12 +664,12 @@ func renderPageHeader(currentTab string, requireNonguix bool) string {
 	}
 
 	return fmt.Sprintf(`
-  <header class="site-header-container">
-    <strong class="site-header-element-left"><a href="/%s">Guix Pull with All Prebuilts Ready</a></strong>
-    <nav class="site-header-element-right">
-      <a href="/status%s"%s>Status</a>
-    </nav>
-  </header>
+	<header class="site-header-container">
+		<strong class="site-header-element-left"><a href="/%s">Guix Pull with All Prebuilts Ready</a></strong>
+		<nav class="site-header-element-right">
+			<a href="/status%s"%s>Status</a>
+		</nav>
+	</header>
 `, querySuffix, querySuffix, statusClass)
 }
 
@@ -691,11 +694,11 @@ func renderReadyCommitBlock(ov systemOverview, escServerURL string, requireNongu
 		r := ov.StrictReady
 		dateHTML := formatEvalDateHTML(r.EvaluationDate)
 		fmt.Fprintf(&b, `
-    <div class="card-commit mono">
-      <a href="https://codeberg.org/guix/guix/commit/%s" target="_blank" rel="noopener">%s</a>
-      <button type="button" class="btn" data-copy="%s" onclick="copyFromBtn(this)">Copy Commit</button>
-    </div>
-    <div class="card-meta">Eval <a href="%s/eval/%d" target="_blank" rel="noopener">#%d</a>%s &middot; %d behind master &middot; %d packages built</div>`,
+		<div class="card-commit mono">
+			<a href="https://codeberg.org/guix/guix/commit/%s" target="_blank" rel="noopener">%s</a>
+			<button type="button" class="btn" data-copy="%s" onclick="copyFromBtn(this)">Copy Commit</button>
+		</div>
+		<div class="card-meta">Eval <a href="%s/eval/%d" target="_blank" rel="noopener">#%d</a>%s &middot; %d behind master &middot; %d packages built</div>`,
 			html.EscapeString(r.Commit), html.EscapeString(r.Commit),
 			html.EscapeString(r.Commit),
 			escServerURL, r.EvaluationID, r.EvaluationID, dateHTML, r.EvaluationsBehind, r.SucceededCount,
@@ -704,14 +707,14 @@ func renderReadyCommitBlock(ov systemOverview, escServerURL string, requireNongu
 		r := ov.BestAvailable
 		dateHTML := formatEvalDateHTML(r.EvaluationDate)
 		fmt.Fprintf(&b, `
-    <div style="margin-bottom:0.35rem;">
-      <span class="badge badge-warn">Closest to Ready (%d Pending, no 0-pending in last %d)</span>
-    </div>
-    <div class="card-commit mono">
-      <a href="https://codeberg.org/guix/guix/commit/%s" target="_blank" rel="noopener">%s</a>
-      <button type="button" class="btn" data-copy="%s" onclick="copyFromBtn(this)">Copy Commit</button>
-    </div>
-    <div class="card-meta">Eval <a href="%s/eval/%d" target="_blank" rel="noopener">#%d</a>%s &middot; %d behind master &middot; %d packages built</div>`,
+		<div style="margin-bottom:0.35rem;">
+			<span class="badge badge-warn">Closest to Ready (%d Pending, no 0-pending in last %d)</span>
+		</div>
+		<div class="card-commit mono">
+			<a href="https://codeberg.org/guix/guix/commit/%s" target="_blank" rel="noopener">%s</a>
+			<button type="button" class="btn" data-copy="%s" onclick="copyFromBtn(this)">Copy Commit</button>
+		</div>
+		<div class="card-meta">Eval <a href="%s/eval/%d" target="_blank" rel="noopener">#%d</a>%s &middot; %d behind master &middot; %d packages built</div>`,
 			r.PendingCount, len(ov.Evaluations),
 			html.EscapeString(r.Commit), html.EscapeString(r.Commit),
 			html.EscapeString(r.Commit),
@@ -735,12 +738,12 @@ func renderReadyCommitBlock(ov systemOverview, escServerURL string, requireNongu
 		}
 		guixDateHTML := formatEvalDateHTML(ngRes.EvaluationDate)
 		fmt.Fprintf(&b, `
-    <div style="font-size:0.82rem;font-weight:600;color:var(--muted);margin-top:0.25rem;">guix channel:</div>
-    <div class="card-commit mono">
-      <a href="https://codeberg.org/guix/guix/commit/%s" target="_blank" rel="noopener">%s</a>
-      <button type="button" class="btn" data-copy="%s" onclick="copyFromBtn(this)">Copy Commit</button>
-    </div>
-    <div class="card-meta">Eval <a href="%s/eval/%d" target="_blank" rel="noopener">#%d</a>%s &middot; %d behind master &middot; %d packages built</div>`,
+		<div style="font-size:0.82rem;font-weight:600;color:var(--muted);margin-top:0.25rem;">guix channel:</div>
+		<div class="card-commit mono">
+			<a href="https://codeberg.org/guix/guix/commit/%s" target="_blank" rel="noopener">%s</a>
+			<button type="button" class="btn" data-copy="%s" onclick="copyFromBtn(this)">Copy Commit</button>
+		</div>
+		<div class="card-meta">Eval <a href="%s/eval/%d" target="_blank" rel="noopener">#%d</a>%s &middot; %d behind master &middot; %d packages built</div>`,
 			html.EscapeString(ngRes.Commit), html.EscapeString(ngRes.Commit),
 			html.EscapeString(ngRes.Commit),
 			escServerURL, ngRes.EvaluationID, ngRes.EvaluationID, guixDateHTML, ngRes.EvaluationsBehind, ngRes.SucceededCount,
@@ -749,12 +752,12 @@ func renderReadyCommitBlock(ov systemOverview, escServerURL string, requireNongu
 			chDateHTML := formatEvalDateHTML(ch.EvaluationDate)
 			chServer := html.EscapeString(ch.ServerURL)
 			fmt.Fprintf(&b, `
-    <div style="font-size:0.82rem;font-weight:600;color:var(--muted);margin-top:0.65rem;">%s channel:</div>
-    <div class="card-commit mono">
-      <a href="https://gitlab.com/nonguix/nonguix/-/commit/%s" target="_blank" rel="noopener">%s</a>
-      <button type="button" class="btn" data-copy="%s" onclick="copyFromBtn(this)">Copy Commit</button>
-    </div>
-    <div class="card-meta">Eval <a href="%s/eval/%d" target="_blank" rel="noopener">#%d</a>%s &middot; %d behind %s &middot; %d packages built</div>`,
+		<div style="font-size:0.82rem;font-weight:600;color:var(--muted);margin-top:0.65rem;">%s channel:</div>
+		<div class="card-commit mono">
+			<a href="https://gitlab.com/nonguix/nonguix/-/commit/%s" target="_blank" rel="noopener">%s</a>
+			<button type="button" class="btn" data-copy="%s" onclick="copyFromBtn(this)">Copy Commit</button>
+		</div>
+		<div class="card-meta">Eval <a href="%s/eval/%d" target="_blank" rel="noopener">#%d</a>%s &middot; %d behind %s &middot; %d packages built</div>`,
 				html.EscapeString(ch.Channel),
 				html.EscapeString(ch.Commit), html.EscapeString(ch.Commit),
 				html.EscapeString(ch.Commit),
@@ -793,47 +796,50 @@ func renderCLIExamplesBlock(escBaseURL string, requireNonguix bool) string {
 	b.WriteString(`<h2>Usages</h2>`)
 
 	fmt.Fprintf(&b, `
-    <div id="main-cli-guix" class="examples-list"%s>
-      <div class="example-item">
-        <div class="example-desc">Pull the newest ready commit dynamically via API:</div>
-        <div class="code-box-row">
-          <pre class="mono">guix pull -C &lt;(curl -fsSL "%s/channels.scm")</pre>
-          <button type="button" class="btn" data-copy="guix pull -C &lt;(curl -fsSL &quot;%s/channels.scm&quot;)" onclick="copyFromBtn(this)">Copy</button>
-        </div>
-      </div>
-      <div class="example-item">
-        <div class="example-desc">Track automatically via ~/.config/guix/channels.scm:</div>
-        <div class="code-box-row">
-          <pre class="mono">(downloaded-channels "%s/channels.scm")</pre>
-          <button type="button" class="btn" data-copy="(downloaded-channels &quot;%s/channels.scm&quot;)" onclick="copyFromBtn(this)">Copy</button>
-        </div>
-        <div style="margin-top:0.35rem;font-size:0.8rem;color:var(--text-muted);">See GNU Guix manual on <a href="https://guix.gnu.org/manual/devel/en/html_node/Channels-with-Substitutes.html" target="_blank" rel="noopener">Channels with Substitutes</a>.</div>
-      </div>
-    </div>`,
+		<div id="main-cli-guix" class="examples-list"%s>
+			<div class="example-item">
+				<div class="example-desc">Pull the newest ready commit dynamically via API:</div>
+				<div class="code-box-row">
+					<pre class="mono">guix pull -C &lt;(curl -fsSL "%s/channels.scm")</pre>
+					<button type="button" class="btn" data-copy="guix pull -C &lt;(curl -fsSL &quot;%s/channels.scm&quot;)" onclick="copyFromBtn(this)">Copy</button>
+				</div>
+			</div>
+			<div class="example-item">
+				<div class="example-desc">Track automatically via ~/.config/guix/channels.scm:</div>
+				<div class="code-box-row">
+					<pre class="mono">(downloaded-channels "%s/channels.scm")</pre>
+					<button type="button" class="btn" data-copy="(downloaded-channels &quot;%s/channels.scm&quot;)" onclick="copyFromBtn(this)">Copy</button>
+				</div>
+				<div style="margin-top:0.35rem;font-size:0.8rem;color:var(--text-muted);">See GNU Guix manual on <a href="https://guix.gnu.org/manual/devel/en/html_node/Channels-with-Substitutes.html" target="_blank" rel="noopener">Channels with Substitutes</a>.</div>
+			</div>
+		</div>`,
 		guixStyle,
 		escBaseURL, escBaseURL,
 		escBaseURL, escBaseURL,
 	)
 
 	fmt.Fprintf(&b, `
-    <div id="main-cli-nonguix" class="examples-list"%s>
-      <div class="example-item">
-        <div class="example-desc">Pull both guix and nonguix at their coordinated ready commits:</div>
-        <div class="code-box-row">
-          <pre class="mono">guix pull -C &lt;(curl -fsSL "%s/channels.scm?additional_channels=nonguix")</pre>
-          <button type="button" class="btn" data-copy="guix pull -C &lt;(curl -fsSL &quot;%s/channels.scm?additional_channels=nonguix&quot;)" onclick="copyFromBtn(this)">Copy</button>
-        </div>
-      </div>
-      <div class="example-item">
-        <div class="example-desc">Track both channels automatically via ~/.config/guix/channels.scm:</div>
-        <div class="code-box-row">
-          <pre class="mono">(downloaded-channels "%s/channels.scm?additional_channels=nonguix")</pre>
-          <button type="button" class="btn" data-copy="(downloaded-channels &quot;%s/channels.scm?additional_channels=nonguix&quot;)" onclick="copyFromBtn(this)">Copy</button>
-        </div>
-        <div style="margin-top:0.35rem;font-size:0.8rem;color:var(--text-muted);">See GNU Guix manual on <a href="https://guix.gnu.org/manual/devel/en/html_node/Channels-with-Substitutes.html" target="_blank" rel="noopener">Channels with Substitutes</a>.</div>
-      </div>
-    </div>
-  </div>`,
+		<div id="main-cli-nonguix" class="examples-list"%s>
+			<div style="padding:0.65rem 0.85rem;background:var(--warn-bg);color:var(--warn-text);border-radius:6px;font-size:0.86rem;">
+				<strong>IMPORTANT:</strong> <code>nonguix</code> substitutes require one-time manual setup. Follow <a href="https://gitlab.com/nonguix/nonguix/#substitutes-for-nonguix" target="_blank" rel="noopener" style="color:inherit;font-weight:600;text-decoration:underline;">Substitutes for Nonguix</a> to authorize the substitute server.
+			</div>
+			<div class="example-item">
+				<div class="example-desc">Pull both guix and nonguix at their coordinated ready commits:</div>
+				<div class="code-box-row">
+					<pre class="mono">guix pull -C &lt;(curl -fsSL "%s/channels.scm?additional_channels=nonguix")</pre>
+					<button type="button" class="btn" data-copy="guix pull -C &lt;(curl -fsSL &quot;%s/channels.scm?additional_channels=nonguix&quot;)" onclick="copyFromBtn(this)">Copy</button>
+				</div>
+			</div>
+			<div class="example-item">
+				<div class="example-desc">Track both channels automatically via ~/.config/guix/channels.scm:</div>
+				<div class="code-box-row">
+					<pre class="mono">(downloaded-channels "%s/channels.scm?additional_channels=nonguix")</pre>
+					<button type="button" class="btn" data-copy="(downloaded-channels &quot;%s/channels.scm?additional_channels=nonguix&quot;)" onclick="copyFromBtn(this)">Copy</button>
+				</div>
+				<div style="margin-top:0.35rem;font-size:0.8rem;color:var(--text-muted);">See GNU Guix manual on <a href="https://guix.gnu.org/manual/devel/en/html_node/Channels-with-Substitutes.html" target="_blank" rel="noopener">Channels with Substitutes</a>.</div>
+			</div>
+		</div>
+	</div>`,
 		ngStyle,
 		escBaseURL, escBaseURL,
 		escBaseURL, escBaseURL,
@@ -856,12 +862,12 @@ func renderReadyCommitCardCompact(ov systemOverview, escServerURL string, requir
 		short := shortCommit(r.Commit)
 		dateHTML := formatEvalDateHTML(r.EvaluationDate)
 		fmt.Fprintf(&b, `
-      <div class="card-title"><span>Latest Ready Commit</span></div>
-      <div class="card-commit mono">
-        <a href="https://codeberg.org/guix/guix/commit/%s" target="_blank" rel="noopener">%s</a>
-        <button type="button" class="btn" data-copy="%s" onclick="copyFromBtn(this)">Copy</button>
-      </div>
-      <div class="card-meta">Eval <a href="%s/eval/%d" target="_blank" rel="noopener">#%d</a>%s &middot; %d behind &middot; %d built</div>`,
+			<div class="card-title"><span>Latest Ready Commit</span></div>
+			<div class="card-commit mono">
+				<a href="https://codeberg.org/guix/guix/commit/%s" target="_blank" rel="noopener">%s</a>
+				<button type="button" class="btn" data-copy="%s" onclick="copyFromBtn(this)">Copy</button>
+			</div>
+			<div class="card-meta">Eval <a href="%s/eval/%d" target="_blank" rel="noopener">#%d</a>%s &middot; %d behind &middot; %d built</div>`,
 			html.EscapeString(r.Commit), html.EscapeString(short),
 			html.EscapeString(r.Commit),
 			escServerURL, r.EvaluationID, r.EvaluationID, dateHTML, r.EvaluationsBehind, r.SucceededCount,
@@ -871,12 +877,12 @@ func renderReadyCommitCardCompact(ov systemOverview, escServerURL string, requir
 		short := shortCommit(r.Commit)
 		dateHTML := formatEvalDateHTML(r.EvaluationDate)
 		fmt.Fprintf(&b, `
-      <div class="card-title"><span>Closest to Ready (%d Pending)</span><span class="badge badge-warn">No 0-pending in last %d</span></div>
-      <div class="card-commit mono">
-        <a href="https://codeberg.org/guix/guix/commit/%s" target="_blank" rel="noopener">%s</a>
-        <button type="button" class="btn" data-copy="%s" onclick="copyFromBtn(this)">Copy</button>
-      </div>
-      <div class="card-meta">Eval <a href="%s/eval/%d" target="_blank" rel="noopener">#%d</a>%s &middot; %d behind &middot; %d built</div>`,
+			<div class="card-title"><span>Closest to Ready (%d Pending)</span><span class="badge badge-warn">No 0-pending in last %d</span></div>
+			<div class="card-commit mono">
+				<a href="https://codeberg.org/guix/guix/commit/%s" target="_blank" rel="noopener">%s</a>
+				<button type="button" class="btn" data-copy="%s" onclick="copyFromBtn(this)">Copy</button>
+			</div>
+			<div class="card-meta">Eval <a href="%s/eval/%d" target="_blank" rel="noopener">#%d</a>%s &middot; %d behind &middot; %d built</div>`,
 			r.PendingCount, len(ov.Evaluations),
 			html.EscapeString(r.Commit), html.EscapeString(short),
 			html.EscapeString(r.Commit),
@@ -884,8 +890,8 @@ func renderReadyCommitCardCompact(ov systemOverview, escServerURL string, requir
 		)
 	} else {
 		b.WriteString(`
-      <div class="card-title"><span>Latest Ready Commit</span><span class="badge badge-warn">Warming up</span></div>
-      <div class="card-meta">Initial evaluation sync from Cuirass is in progress.</div>`)
+			<div class="card-title"><span>Latest Ready Commit</span><span class="badge badge-warn">Warming up</span></div>
+			<div class="card-meta">Initial evaluation sync from Cuirass is in progress.</div>`)
 	}
 	b.WriteString(`</div>`)
 
@@ -904,12 +910,12 @@ func renderReadyCommitCardCompact(ov systemOverview, escServerURL string, requir
 			titleBadge = fmt.Sprintf(`<span class="badge badge-warn">%d Pending</span>`, ngRes.PendingCount)
 		}
 		fmt.Fprintf(&b, `
-      <div class="card-title"><span>Latest Ready Commit (Coordinated)</span>%s</div>
-      <div class="card-commit mono">
-        <span style="font-size:0.78rem;color:var(--muted);">guix:</span> <a href="https://codeberg.org/guix/guix/commit/%s" target="_blank" rel="noopener">%s</a>
-        <button type="button" class="btn" data-copy="%s" onclick="copyFromBtn(this)">Copy</button>
-      </div>
-      <div class="card-meta">Eval <a href="%s/eval/%d" target="_blank" rel="noopener">#%d</a>%s &middot; %d behind &middot; %d built</div>`,
+			<div class="card-title"><span>Latest Ready Commit (Coordinated)</span>%s</div>
+			<div class="card-commit mono">
+				<span style="font-size:0.78rem;color:var(--muted);">guix:</span> <a href="https://codeberg.org/guix/guix/commit/%s" target="_blank" rel="noopener">%s</a>
+				<button type="button" class="btn" data-copy="%s" onclick="copyFromBtn(this)">Copy</button>
+			</div>
+			<div class="card-meta">Eval <a href="%s/eval/%d" target="_blank" rel="noopener">#%d</a>%s &middot; %d behind &middot; %d built</div>`,
 			titleBadge,
 			html.EscapeString(ngRes.Commit), html.EscapeString(shortGuix),
 			html.EscapeString(ngRes.Commit),
@@ -920,11 +926,11 @@ func renderReadyCommitCardCompact(ov systemOverview, escServerURL string, requir
 			chDateHTML := formatEvalDateHTML(ch.EvaluationDate)
 			chServer := html.EscapeString(ch.ServerURL)
 			fmt.Fprintf(&b, `
-      <div class="card-commit mono" style="margin-top:0.35rem;">
-        <span style="font-size:0.78rem;color:var(--muted);">%s:</span> <a href="https://gitlab.com/nonguix/nonguix/-/commit/%s" target="_blank" rel="noopener">%s</a>
-        <button type="button" class="btn" data-copy="%s" onclick="copyFromBtn(this)">Copy</button>
-      </div>
-      <div class="card-meta">Eval <a href="%s/eval/%d" target="_blank" rel="noopener">#%d</a>%s &middot; %d behind &middot; %d built</div>`,
+			<div class="card-commit mono" style="margin-top:0.35rem;">
+				<span style="font-size:0.78rem;color:var(--muted);">%s:</span> <a href="https://gitlab.com/nonguix/nonguix/-/commit/%s" target="_blank" rel="noopener">%s</a>
+				<button type="button" class="btn" data-copy="%s" onclick="copyFromBtn(this)">Copy</button>
+			</div>
+			<div class="card-meta">Eval <a href="%s/eval/%d" target="_blank" rel="noopener">#%d</a>%s &middot; %d behind &middot; %d built</div>`,
 				html.EscapeString(ch.Channel),
 				html.EscapeString(ch.Commit), html.EscapeString(shortCh),
 				html.EscapeString(ch.Commit),
@@ -933,8 +939,8 @@ func renderReadyCommitCardCompact(ov systemOverview, escServerURL string, requir
 		}
 	} else {
 		b.WriteString(`
-      <div class="card-title"><span>Latest Ready Commit (Coordinated)</span><span class="badge badge-warn">Warming up</span></div>
-      <div class="card-meta">Waiting for coordinated nonguix + guix evaluation data...</div>`)
+			<div class="card-title"><span>Latest Ready Commit (Coordinated)</span><span class="badge badge-warn">Warming up</span></div>
+			<div class="card-meta">Waiting for coordinated nonguix + guix evaluation data...</div>`)
 	}
 	b.WriteString(`</div>`)
 	b.WriteString(`</div>`)
@@ -952,12 +958,12 @@ func renderLatestEvalCard(ov systemOverview, escServerURL string) string {
 			pct = float64(le.SucceededJobs) * 100.0 / float64(le.TotalJobs)
 		}
 		fmt.Fprintf(&b, `
-      <div class="card-title"><span>Latest Master Evaluation</span><span class="badge badge-neutral">%.1f%% Built</span></div>
-      <div class="card-commit mono">
-        <a href="https://codeberg.org/guix/guix/commit/%s" target="_blank" rel="noopener">%s</a>
-        <button type="button" class="btn" data-copy="%s" onclick="copyFromBtn(this)">Copy</button>
-      </div>
-      <div class="card-meta">Eval <a href="%s/eval/%d" target="_blank" rel="noopener">#%d</a> &middot; %d ok / %d pend / %d fail</div>`,
+			<div class="card-title"><span>Latest Master Evaluation</span><span class="badge badge-neutral">%.1f%% Built</span></div>
+			<div class="card-commit mono">
+				<a href="https://codeberg.org/guix/guix/commit/%s" target="_blank" rel="noopener">%s</a>
+				<button type="button" class="btn" data-copy="%s" onclick="copyFromBtn(this)">Copy</button>
+			</div>
+			<div class="card-meta">Eval <a href="%s/eval/%d" target="_blank" rel="noopener">#%d</a> &middot; %d ok / %d pend / %d fail</div>`,
 			pct,
 			html.EscapeString(le.Commit), html.EscapeString(short),
 			html.EscapeString(le.Commit),
@@ -996,7 +1002,6 @@ func renderInteractiveResolverPanel(defaultMaxPending int, requireNonguix bool) 
 				</div>
 			</div>
 			<div class="checkboxes">
-				<label><input type="checkbox" id="f-require-pull" checked> Require prebuilt <code>guix pull</code> binary</label>
 				<label><input type="checkbox" id="f-additional-nonguix"%s onchange="toggleStatusNonguix(this.checked)"> Require <code>nonguix</code> channel</label>
 				<label><input type="checkbox" id="f-allow-failed"> Allow failed builds in package mode</label>
 			</div>
@@ -1026,18 +1031,16 @@ func renderEvaluationsTable(ov systemOverview, escServerURL string, requireNongu
 			<table>
 				<thead>
 					<tr>
-						<th>Eval</th>
-						<th>Commit</th>
+						<th>guix commit</th>
 						<th>Date (Local)</th>
-						<th class="prog-cell">Build Progress</th>
-						<th>guix pull</th>
-						<th class="col-nonguix"%s>nonguix</th>
-						<th>Pending Sample</th>
+						<th><a href="https://ci.guix.gnu.org/jobset/master" target="_blank" rel="noopener">guix/master</a></th>
+						<th><a href="https://ci.guix.gnu.org/jobset/guix" target="_blank" rel="noopener">guix/guix</a></th>
+						<th class="col-nonguix"%s><a href="https://cuirass.nonguix.org/jobset/nonguix" target="_blank" rel="noopener">nonguix/nonguix</a></th>
 					</tr>
 				</thead>
 				<tbody>
 `, ngColStyle)
-		for idx, item := range ov.Evaluations {
+		for _, item := range ov.Evaluations {
 			short := shortCommit(item.Commit)
 			dateCell := `<td class="mono" style="white-space:nowrap;">unknown</td>`
 			if !item.Timestamp.IsZero() {
@@ -1048,92 +1051,52 @@ func renderEvaluationsTable(ov systemOverview, escServerURL string, requireNongu
 					html.EscapeString(isoStr), html.EscapeString(utcStr), html.EscapeString(shortUTC))
 			}
 
-			okPct, warnPct, errPct := 0.0, 0.0, 0.0
-			if item.TotalJobs > 0 {
-				okPct = float64(item.SucceededJobs) * 100.0 / float64(item.TotalJobs)
-				warnPct = float64(item.PendingJobs) * 100.0 / float64(item.TotalJobs)
-				errPct = float64(item.FailedJobs) * 100.0 / float64(item.TotalJobs)
+			pullBadge := `<span class="badge badge-warn">Pending</span>`
+			if item.PullReady {
+				pullBadge = `<span class="badge badge-ok">Ready</span>`
+			}
+			pullCell := pullBadge
+			if item.PullEvalID > 0 {
+				pullCell = fmt.Sprintf(`<div style="display:inline-flex;align-items:center;gap:0.4rem;"><a href="%s/eval/%d" target="_blank" rel="noopener" class="mono"><strong>#%d</strong></a>%s</div>`,
+					escServerURL, item.PullEvalID, item.PullEvalID, pullBadge)
 			}
 
-			pullCell := `<span class="badge badge-warn">Pending</span>`
-			if item.PullReady {
-				if item.PullEvalID > 0 {
-					pullCell = fmt.Sprintf(`<a href="%s/eval/%d" target="_blank" rel="noopener"><span class="badge badge-ok">Ready (#%d)</span></a>`,
-						escServerURL, item.PullEvalID, item.PullEvalID)
-				} else {
-					pullCell = `<span class="badge badge-ok">Ready</span>`
-				}
+			masterBadge := `<span class="badge badge-warn">Pending</span>`
+			if item.PendingJobs == 0 {
+				masterBadge = `<span class="badge badge-ok">Ready</span>`
 			}
+			masterCell := fmt.Sprintf(`<div style="display:inline-flex;align-items:center;gap:0.4rem;"><a href="%s/eval/%d" target="_blank" rel="noopener" class="mono"><strong>#%d</strong></a>%s</div>`,
+				escServerURL, item.EvaluationID, item.EvaluationID, masterBadge)
 
 			nonguixCell := `<span style="color:var(--muted);font-size:0.8rem;" title="No nonguix evaluation against this Guix commit">-</span>`
 			if item.NonguixEvalID > 0 {
 				escNgServer := html.EscapeString(item.NonguixServerURL)
 				shortNgCommit := html.EscapeString(shortCommit(item.NonguixCommit))
+				ngBadge := `<span class="badge badge-warn">Pending</span>`
 				if item.NonguixReady {
-					nonguixCell = fmt.Sprintf(`<a href="%s/eval/%d" target="_blank" rel="noopener" title="nonguix commit %s"><span class="badge badge-ok">Ready (#%d)</span></a>`,
-						escNgServer, item.NonguixEvalID, shortNgCommit, item.NonguixEvalID)
-				} else {
-					nonguixCell = fmt.Sprintf(`<a href="%s/eval/%d" target="_blank" rel="noopener" title="nonguix commit %s (%d pending)"><span class="badge badge-warn">Pending (#%d)</span></a>`,
-						escNgServer, item.NonguixEvalID, shortNgCommit, item.NonguixPendingJobs, item.NonguixEvalID)
+					ngBadge = `<span class="badge badge-ok">Ready</span>`
 				}
-			}
-
-			var sampleHTML strings.Builder
-			if item.PendingJobs == 0 {
-				sampleHTML.WriteString(`<span class="badge badge-ok">All builds finished</span>`)
-			} else if len(item.PendingSample) > 0 {
-				sampleHTML.WriteString(`<div class="pending-tags">`)
-				sysSuffix := "." + item.System
-				for _, jobName := range item.PendingSample {
-					trimmed := strings.TrimSuffix(jobName, sysSuffix)
-					fmt.Fprintf(&sampleHTML, `<span class="pkg-tag mono" title="%s">%s</span>`,
-						html.EscapeString(jobName), html.EscapeString(trimmed))
-				}
-				if item.PendingJobs > len(item.PendingSample) {
-					fmt.Fprintf(&sampleHTML, `<span class="pkg-tag mono">+%d more</span>`,
-						item.PendingJobs-len(item.PendingSample))
-				}
-				sampleHTML.WriteString(`</div>`)
-			} else {
-				fmt.Fprintf(&sampleHTML, `<span class="mono">%d pending</span>`, item.PendingJobs)
+				nonguixCell = fmt.Sprintf(`<div style="display:inline-flex;align-items:center;gap:0.4rem;"><a href="%s/eval/%d" target="_blank" rel="noopener" class="mono" title="nonguix commit %s"><strong>#%d</strong></a>%s</div>`,
+					escNgServer, item.NonguixEvalID, shortNgCommit, item.NonguixEvalID, ngBadge)
 			}
 
 			fmt.Fprintf(&b, `
 					<tr>
 						<td class="mono">
-							<a href="%s/eval/%d" target="_blank" rel="noopener"><strong>#%d</strong></a>
-							<div style="font-size:0.74rem;color:var(--muted);">lag: %d</div>
-						</td>
-						<td class="mono">
 							<a href="https://codeberg.org/guix/guix/commit/%s" target="_blank" rel="noopener">%s</a>
 							<button type="button" data-copy="%s" onclick="copyFromBtn(this)" style="padding:0.1rem 0.4rem;font-size:0.72rem;margin-left:0.3rem;">Copy</button>
 						</td>
 						%s
-						<td class="prog-cell">
-							<div class="prog-bar">
-								<div class="prog-ok" style="width:%.2f%%"></div>
-								<div class="prog-warn" style="width:%.2f%%"></div>
-								<div class="prog-err" style="width:%.2f%%"></div>
-							</div>
-							<div class="prog-legend mono">
-								<span style="color:var(--ok-text)">%d ok</span>
-								<span style="color:var(--warn-text)">%d pend</span>
-								<span style="color:var(--err-text)">%d fail</span>
-							</div>
-						</td>
+						<td>%s</td>
 						<td>%s</td>
 						<td class="col-nonguix"%s>%s</td>
-						<td>%s</td>
 					</tr>`,
-				escServerURL, item.EvaluationID, item.EvaluationID, idx,
 				html.EscapeString(item.Commit), html.EscapeString(short), html.EscapeString(item.Commit),
 				dateCell,
-				okPct, warnPct, errPct,
-				item.SucceededJobs, item.PendingJobs, item.FailedJobs,
+				masterCell,
 				pullCell,
 				ngColStyle,
 				nonguixCell,
-				sampleHTML.String(),
 			)
 		}
 		b.WriteString(`
@@ -1277,7 +1240,6 @@ async function runFinder(ev) {
 
 	const pkgs = document.getElementById("f-pkgs").value.trim();
 	const maxPending = document.getElementById("f-max-pending").value || "0";
-	const reqPull = document.getElementById("f-require-pull").checked;
 	const reqNonguix = document.getElementById("f-additional-nonguix") && document.getElementById("f-additional-nonguix").checked;
 	const allowFailed = document.getElementById("f-allow-failed").checked;
 
@@ -1288,7 +1250,6 @@ async function runFinder(ev) {
 	} else {
 		params.set("max_pending", maxPending);
 	}
-	if (!reqPull) params.set("require_pull", "false");
 	if (reqNonguix) params.set("additional_channels", "nonguix");
 	if (allowFailed) params.set("allow_failed", "true");
 

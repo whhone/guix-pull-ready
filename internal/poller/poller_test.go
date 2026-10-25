@@ -54,7 +54,7 @@ func TestPollerIncrementalSyncAndBuildCache(t *testing.T) {
 					{"build":802,"status":0,"name":"gcc-toolchain.x86_64-linux"}
 				]`))
 			case "1500":
-				_, _ = w.Write([]byte(`[{"build":2500,"status":-2,"name":"guix.x86_64-linux"}]`))
+				_, _ = w.Write([]byte(`[{"build":2500,"status":0,"name":"guix.x86_64-linux"}]`))
 			case "1499":
 				_, _ = w.Write([]byte(`[{"build":2499,"status":0,"name":"guix.x86_64-linux"}]`))
 			}
@@ -106,9 +106,8 @@ func TestPollerIncrementalSyncAndBuildCache(t *testing.T) {
 	// Resolve gcc-toolchain@13 -> triggers lazy build version lookup for build 902 and 903
 	p.ResolveMissingVersions(ctx, "x86_64-linux", []string{"gcc-toolchain@13"})
 	res, err := resolver.Resolve(st.Snapshot(), resolver.Query{
-		System:      "x86_64-linux",
-		Packages:    []string{"emacs", "gcc-toolchain@13"},
-		RequirePull: resolver.Bool(false),
+		System:   "x86_64-linux",
+		Packages: []string{"emacs", "gcc-toolchain@13"},
 	})
 	if err != nil {
 		t.Fatalf("Resolve failed: %v", err)

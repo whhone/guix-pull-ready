@@ -40,14 +40,8 @@ type Query struct {
 	Limit              int
 	MaxPending         int
 	AllowFailed        bool
-	RequirePull        *bool // nil defaults to true
 	Packages           []string
 	AdditionalChannels []string
-}
-
-// Bool returns a pointer to the given boolean, useful for setting Query.RequirePull.
-func Bool(b bool) *bool {
-	return &b
 }
 
 // ChannelResult contains the resolved commit and evaluation metadata for an additional channel.
@@ -146,16 +140,9 @@ func Resolve(snap *store.Snapshot, q Query) (*Result, error) {
 }
 
 func resolveWholeEvalMode(snap *store.Snapshot, evals []store.EvaluationRecord, q Query) (*Result, error) {
-	requirePull := true
-	if q.RequirePull != nil {
-		requirePull = *q.RequirePull
-	}
 	for idx, ev := range evals {
 		data, ok := snap.ByEvalSystem[store.EvalSystemKey{EvalID: ev.ID, System: q.System}]
-		if !ok || data.TotalJobs == 0 {
-			continue
-		}
-		if requirePull && !data.PullReady {
+		if !ok || data.TotalJobs == 0 || !data.PullReady {
 			continue
 		}
 		if data.PendingJobs <= q.MaxPending {
@@ -215,17 +202,9 @@ func resolvePackageMode(snap *store.Snapshot, evals []store.EvaluationRecord, q 
 		untrackedSpecs = []string{}
 	}
 
-	requirePull := true
-	if q.RequirePull != nil {
-		requirePull = *q.RequirePull
-	}
-
 	for idx, ev := range evals {
 		data, ok := snap.ByEvalSystem[store.EvalSystemKey{EvalID: ev.ID, System: q.System}]
-		if !ok || data.TotalJobs == 0 {
-			continue
-		}
-		if requirePull && !data.PullReady {
+		if !ok || data.TotalJobs == 0 || !data.PullReady {
 			continue
 		}
 
@@ -286,11 +265,6 @@ func resolveWithAdditionalChannels(snap *store.Snapshot, q Query, specs []string
 }
 
 func resolveMultiChannelWholeEvalMode(snap *store.Snapshot, q Query, addChannels []string) (*Result, error) {
-	requirePull := true
-	if q.RequirePull != nil {
-		requirePull = *q.RequirePull
-	}
-
 	// Currently "nonguix" is the primary additional channel driving candidate pairs.
 	primaryAddCh := addChannels[0]
 	ngEvals := snap.ChannelEvaluations[primaryAddCh]
@@ -325,10 +299,7 @@ func resolveMultiChannelWholeEvalMode(snap *store.Snapshot, q Query, addChannels
 			continue
 		}
 		guixData, ok := snap.ByEvalSystem[store.EvalSystemKey{EvalID: guixEv.ID, System: q.System}]
-		if !ok || guixData == nil || guixData.TotalJobs == 0 {
-			continue
-		}
-		if requirePull && !guixData.PullReady {
+		if !ok || guixData == nil || guixData.TotalJobs == 0 || !guixData.PullReady {
 			continue
 		}
 		if guixData.PendingJobs > q.MaxPending {
@@ -405,11 +376,6 @@ func resolveMultiChannelPackageMode(snap *store.Snapshot, q Query, specs []strin
 		untrackedSpecs = []string{}
 	}
 
-	requirePull := true
-	if q.RequirePull != nil {
-		requirePull = *q.RequirePull
-	}
-
 	ngEvals := snap.ChannelEvaluations[primaryAddCh]
 	if len(ngEvals) > q.Limit {
 		ngEvals = ngEvals[:q.Limit]
@@ -442,10 +408,7 @@ func resolveMultiChannelPackageMode(snap *store.Snapshot, q Query, specs []strin
 			continue
 		}
 		guixData, ok := snap.ByEvalSystem[store.EvalSystemKey{EvalID: guixEv.ID, System: q.System}]
-		if !ok || guixData == nil || guixData.TotalJobs == 0 {
-			continue
-		}
-		if requirePull && !guixData.PullReady {
+		if !ok || guixData == nil || guixData.TotalJobs == 0 || !guixData.PullReady {
 			continue
 		}
 

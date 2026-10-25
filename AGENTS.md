@@ -100,7 +100,6 @@ The service listens on `:8080` by default. All endpoints support both GET query 
 | :--- | :--- | :--- |
 | `system` | `x86_64-linux` | Target architecture (e.g. `x86_64-linux`, `aarch64-linux`) |
 | `max_pending` | `0` | Whole-evaluation mode: maximum acceptable pending builds |
-| `require_pull` | `true` | Require prebuilt binary for `guix pull` (succeeded `guix` jobset build) |
 | `pkgs` | *(none)* | Comma-separated or space-separated package specs (e.g. `emacs,git,gcc-toolchain@14`) |
 | `additional_channels` | *(none)* | Comma-separated additional channels to coordinate with Guix (e.g. `nonguix`) |
 | `allow_failed` | `false` | Package mode: allow failed builds (only pending builds block) |

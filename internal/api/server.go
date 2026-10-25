@@ -165,23 +165,26 @@ func (s *Server) handleStatusPageOrAPI(w http.ResponseWriter, r *http.Request) {
 }
 
 type evaluationSummaryItem struct {
-	EvaluationID       int64     `json:"evaluation_id"`
-	Commit             string    `json:"commit"`
-	Timestamp          time.Time `json:"timestamp"`
-	System             string    `json:"system"`
-	TotalJobs          int       `json:"total_jobs"`
-	SucceededJobs      int       `json:"succeeded_jobs"`
-	PendingJobs        int       `json:"pending_jobs"`
-	FailedJobs         int       `json:"failed_jobs"`
-	PendingSample      []string  `json:"pending_sample,omitempty"`
-	PullReady          bool      `json:"pull_ready"`
-	PullEvalID         int64     `json:"pull_evaluation_id,omitempty"`
-	NonguixEvalID      int64     `json:"nonguix_evaluation_id,omitempty"`
-	NonguixCommit      string    `json:"nonguix_commit,omitempty"`
-	NonguixReady       bool      `json:"nonguix_ready,omitempty"`
-	NonguixPendingJobs int       `json:"nonguix_pending_jobs,omitempty"`
-	NonguixServerURL   string    `json:"nonguix_server_url,omitempty"`
-	Complete           bool      `json:"complete"`
+	EvaluationID         int64     `json:"evaluation_id"`
+	Commit               string    `json:"commit"`
+	Timestamp            time.Time `json:"timestamp"`
+	System               string    `json:"system"`
+	TotalJobs            int       `json:"total_jobs"`
+	SucceededJobs        int       `json:"succeeded_jobs"`
+	PendingJobs          int       `json:"pending_jobs"`
+	FailedJobs           int       `json:"failed_jobs"`
+	PendingSample        []string  `json:"pending_sample,omitempty"`
+	PullReady            bool      `json:"pull_ready"`
+	PullEvalID           int64     `json:"pull_evaluation_id,omitempty"`
+	NonguixEvalID        int64     `json:"nonguix_evaluation_id,omitempty"`
+	NonguixCommit        string    `json:"nonguix_commit,omitempty"`
+	NonguixReady         bool      `json:"nonguix_ready,omitempty"`
+	NonguixTotalJobs     int       `json:"nonguix_total_jobs,omitempty"`
+	NonguixSucceededJobs int       `json:"nonguix_succeeded_jobs,omitempty"`
+	NonguixPendingJobs   int       `json:"nonguix_pending_jobs,omitempty"`
+	NonguixFailedJobs    int       `json:"nonguix_failed_jobs,omitempty"`
+	NonguixServerURL     string    `json:"nonguix_server_url,omitempty"`
+	Complete             bool      `json:"complete"`
 }
 
 // handleEvaluations returns the list of cached evaluations and their build counts for a target system.
@@ -277,7 +280,6 @@ func (s *Server) resolveRequest(r *http.Request) (*resolver.Result, error) {
 		Limit:       parseIntParam(qParams.Get("limit"), 40, 1, 100),
 		MaxPending:  parseIntParam(qParams.Get("max_pending"), 0, 0, 100000),
 		AllowFailed: parseBoolParam(qParams.Get("allow_failed")),
-		RequirePull: parseBoolParamPtr(qParams.Get("require_pull"), true),
 	}
 
 	for _, v := range qParams["pkgs"] {
@@ -403,25 +405,6 @@ func parseBoolParam(val string) bool {
 		return true
 	default:
 		return false
-	}
-}
-
-func parseBoolParamPtr(val string, defVal bool) *bool {
-	val = strings.ToLower(strings.TrimSpace(val))
-	if val == "" {
-		b := defVal
-		return &b
-	}
-	switch val {
-	case "1", "true", "yes", "on":
-		b := true
-		return &b
-	case "0", "false", "no", "off":
-		b := false
-		return &b
-	default:
-		b := defVal
-		return &b
 	}
 }
 
