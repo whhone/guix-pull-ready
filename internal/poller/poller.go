@@ -7,6 +7,7 @@ import (
 	"context"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,12 +25,13 @@ type ChannelConfig struct {
 
 // Config holds configuration for the background Cuirass poller.
 type Config struct {
-	Systems            []string
-	Limit              int
-	PollInterval       time.Duration
-	MaxActiveRefresh   int
-	AdditionalChannels []ChannelConfig
-	Logger             *slog.Logger
+	Systems             []string
+	Limit               int
+	PollInterval        time.Duration
+	MaxActiveRefresh    int
+	MaxReconcilePending int
+	AdditionalChannels  []ChannelConfig
+	Logger              *slog.Logger
 }
 
 // Poller periodically synchronizes evaluations and job statuses from Cuirass into the local Store.
@@ -44,6 +46,7 @@ type Poller struct {
 	syncing               bool
 	refreshedCycle        map[store.EvalSystemKey]uint64
 	channelRefreshedCycle map[store.ChannelEvalSystemKey]uint64
+	reconciledBuilds      map[store.ChannelBuildKey]cuirass.JobStatus
 	cycleCounter          uint64
 }
 
@@ -74,6 +77,7 @@ func New(client *cuirass.Client, st *store.Store, cfg Config) *Poller {
 		cfg:                   cfg,
 		refreshedCycle:        make(map[store.EvalSystemKey]uint64),
 		channelRefreshedCycle: make(map[store.ChannelEvalSystemKey]uint64),
+		reconciledBuilds:      make(map[store.ChannelBuildKey]cuirass.JobStatus),
 	}
 }
 
@@ -359,6 +363,8 @@ func (p *Poller) syncEvaluations(ctx context.Context) error {
 				continue
 			}
 
+			p.reconcilePendingJobs(ctx, p.client, "guix", sys, jobs)
+
 			p.mu.Lock()
 			p.refreshedCycle[store.EvalSystemKey{EvalID: ev.ID, System: sys}] = cycle
 			p.mu.Unlock()
@@ -505,6 +511,8 @@ func (p *Poller) syncAdditionalChannel(ctx context.Context, ch ChannelConfig, cy
 				continue
 			}
 
+			p.reconcilePendingJobs(ctx, ch.Client, ch.Name, sys, jobs)
+
 			p.mu.Lock()
 			p.channelRefreshedCycle[store.ChannelEvalSystemKey{Channel: ch.Name, EvalID: ev.ID, System: sys}] = cycle
 			p.mu.Unlock()
@@ -516,6 +524,112 @@ func (p *Poller) syncAdditionalChannel(ctx context.Context, ch ChannelConfig, cy
 	}
 
 	return updatedCount
+}
+
+// reconcilePendingJobs cross-checks pending jobs against Cuirass /build/<id> endpoints
+// to reconcile upstream database desynchronization.
+//
+// The Problem:
+// In upstream Cuirass (ci.guix.gnu.org), evaluations register jobs into a denormalized
+// `Jobs` table, which is kept in sync with the canonical `Builds` table via PostgreSQL
+// triggers. When a build completes under another jobset (such as "science-team") or concurrently
+// during evaluation registration, the completion trigger updates existing evaluation rows but can
+// miss the newly inserted job row. Because Cuirass never issues another UPDATE on `Builds` for
+// that derivation once completed, Cuirass's /api/jobs endpoint permanently reports the job as
+// scheduled or pending (e.g. status -3 or -1), even though the underlying derivation was already
+// built successfully.
+//
+// How Reconciliation Works:
+//  1. When an evaluation for a system is near completion (has 1 to MaxReconcilePending pending jobs),
+//     we collect all jobs with IsPending() == true and a valid BuildID > 0.
+//  2. For each pending job, we query Cuirass's canonical /build/<id> endpoint (or check our
+//     in-memory reconciledBuilds cache).
+//  3. If /build/<id> indicates the build is finished (finished == 1):
+//     - We override job.Status in-place with JobStatus(build.BuildStatus) (e.g. 0 for succeeded).
+//     - We cache the resolved status in reconciledBuilds so future passes avoid re-querying.
+//     - We cache any resolved nixname derivation paths for package version resolution.
+//  4. If all pending jobs reconcile to succeeded (or failed), the evaluation naturally reaches
+//     PendingJobs == 0 and is marked Complete in the Store, permanently unblocking it from
+//     blocking whole-evaluation mode.
+func (p *Poller) reconcilePendingJobs(ctx context.Context, client *cuirass.Client, channel string, system string, jobs []cuirass.Job) {
+	if p.cfg.MaxReconcilePending <= 0 || client == nil || len(jobs) == 0 {
+		return
+	}
+	if channel == "" {
+		channel = "guix"
+	}
+
+	suffix := "." + system
+	type pendingItem struct {
+		index   int
+		buildID int64
+	}
+	var pending []pendingItem
+	for i := range jobs {
+		if !strings.HasSuffix(jobs[i].Name, suffix) {
+			continue
+		}
+		if jobs[i].Status.IsPending() && jobs[i].BuildID > 0 {
+			pending = append(pending, pendingItem{index: i, buildID: jobs[i].BuildID})
+		}
+	}
+
+	if len(pending) == 0 || len(pending) > p.cfg.MaxReconcilePending {
+		return
+	}
+
+	nixMap := make(map[int64]string)
+	for _, item := range pending {
+		if ctx.Err() != nil {
+			return
+		}
+
+		key := store.ChannelBuildKey{Channel: channel, BuildID: item.buildID}
+		p.mu.RLock()
+		cachedStatus, isCached := p.reconciledBuilds[key]
+		p.mu.RUnlock()
+
+		if isCached {
+			jobs[item.index].Status = cachedStatus
+			continue
+		}
+
+		b, err := client.Build(ctx, item.buildID)
+		if err != nil {
+			p.cfg.Logger.Debug("failed to query build for pending job reconciliation",
+				"channel", channel,
+				"build_id", item.buildID,
+				"job", jobs[item.index].Name,
+				"err", err,
+			)
+			continue
+		}
+
+		if nix := b.ResolvedNixName(); nix != "" && b.ID > 0 {
+			nixMap[b.ID] = nix
+		}
+
+		if b.IsFinished() {
+			status := b.Status()
+			jobs[item.index].Status = status
+
+			p.mu.Lock()
+			p.reconciledBuilds[key] = status
+			p.mu.Unlock()
+
+			p.cfg.Logger.Info("reconciled stuck pending job via /build/<id>",
+				"channel", channel,
+				"build_id", item.buildID,
+				"job", jobs[item.index].Name,
+				"original_status", "pending",
+				"reconciled_status", status,
+			)
+		}
+	}
+
+	if len(nixMap) > 0 && p.store != nil {
+		p.store.SetChannelBuildNixNames(channel, nixMap)
+	}
 }
 
 // checkGuixPullReady returns true if the "guix" jobset evaluation for a commit

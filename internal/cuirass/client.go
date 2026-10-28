@@ -162,9 +162,21 @@ type Job struct {
 
 // Build represents build details returned by /build/<id>.
 type Build struct {
-	ID         int64  `json:"id"`
-	NixName    string `json:"nixname"`
-	Derivation string `json:"derivation"`
+	ID          int64  `json:"id"`
+	NixName     string `json:"nixname"`
+	Derivation  string `json:"derivation"`
+	Finished    int    `json:"finished"`
+	BuildStatus int    `json:"buildstatus"`
+}
+
+// IsFinished reports whether the build has completed building.
+func (b Build) IsFinished() bool {
+	return b.Finished == 1
+}
+
+// Status returns the JobStatus corresponding to the build's buildstatus.
+func (b Build) Status() JobStatus {
+	return JobStatus(b.BuildStatus)
 }
 
 // ResolvedNixName returns the "<name>-<version>" string extracted from the store

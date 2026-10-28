@@ -85,14 +85,15 @@ CGO_ENABLED=0 go build -trimpath -o guix-sync-server ./cmd/guix-sync-server
 ./guix-sync-server --db-path=./guix-sync.db
 ```
 
-## Known Issues
+## Known Issues & Automatic Reconciliation
 
 ### Cuirass Upstream `Jobs` Cache Desynchronization
 
-Occasionally, an evaluation may appear stuck with a small number of builds (e.g. 1 to 4 packages) marked as pending indefinitely, even though the underlying builds have already succeeded.
+Occasionally, an upstream evaluation may appear stuck with a small number of builds (e.g. 1 to 4 packages) marked as pending indefinitely, even though the underlying builds have already succeeded.
 
-- **Root Cause**: An upstream database race condition in Cuirass (`ci.guix.gnu.org`). Cuirass caches build statuses in a denormalized `Jobs` table populated during evaluation registration, kept in sync with the canonical `Builds` table via a PostgreSQL trigger (`update_job_status`). When an existing build completes concurrently while a new evaluation is being registered, the completion trigger updates existing evaluation rows but misses the newly inserting row. Once a build completes (`status = 0`), Cuirass never issues another `UPDATE` on `Builds` for that derivation, leaving `/api/jobs` permanently reporting `status = -1` (pending) for that evaluation in upstream CI.
-- **Impact**: The affected evaluation will not be chosen in whole-system mode (since its pending count never reaches 0). The service simply falls back to the previous evaluation whose builds completed cleanly. Package-mode queries (`?pkgs=...`) for packages not affected by the desynchronized jobs are unaffected.
+- **Root Cause**: An upstream database race condition in Cuirass (`ci.guix.gnu.org`). Cuirass caches build statuses in a denormalized `Jobs` table populated during evaluation registration, kept in sync with the canonical `Builds` table via a PostgreSQL trigger (`update_job_status`). When an existing build completes under another jobset (such as `science-team`) or concurrently while a new evaluation is being registered, the completion trigger updates existing evaluation rows but can miss the newly inserted row. Once a build completes (`status = 0`), Cuirass never issues another `UPDATE` on `Builds` for that derivation, leaving `/api/jobs` permanently reporting `status = -3` (scheduled) or `status = -1` (started) for that evaluation in upstream CI.
+- **How Reconciliation Works**: `guix-sync-server` automatically reconciles stuck pending jobs. When an evaluation is near completion (has 1 to 10 pending builds, configurable via `--max-reconcile-pending`), the poller queries Cuirass's canonical `/build/<id>` endpoint for each pending build. If the build record indicates completion (`finished == 1`), the poller overrides the desynchronized job status with the canonical build status (e.g. succeeded), allowing the evaluation to reach 0 pending builds and be marked complete.
+- **Fallback**: Package-mode queries (`?pkgs=...`) for packages not affected by the desynchronized jobs are unaffected even before reconciliation occurs.
 
 ## License
 

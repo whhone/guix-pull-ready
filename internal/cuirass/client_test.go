@@ -87,3 +87,43 @@ func TestClientRetryOn504(t *testing.T) {
 		t.Fatalf("expected 3 attempts, got %d", attempts.Load())
 	}
 }
+
+func TestBuildFinishedAndStatus(t *testing.T) {
+	bFinished := Build{
+		ID:          26715933,
+		NixName:     "gr-iqbal-0.38.3",
+		Derivation:  "/gnu/store/nlkvg0xk2c2lzxs97nd5x2l8s6zqjwaz-gr-iqbal-0.38.3.drv",
+		Finished:    1,
+		BuildStatus: 0,
+	}
+	if !bFinished.IsFinished() {
+		t.Errorf("expected bFinished.IsFinished() == true")
+	}
+	if bFinished.Status() != StatusSucceeded {
+		t.Errorf("expected StatusSucceeded, got %v", bFinished.Status())
+	}
+
+	bFailed := Build{
+		ID:          12345,
+		Finished:    1,
+		BuildStatus: 1,
+	}
+	if !bFailed.IsFinished() {
+		t.Errorf("expected bFailed.IsFinished() == true")
+	}
+	if bFailed.Status() != StatusFailed {
+		t.Errorf("expected StatusFailed, got %v", bFailed.Status())
+	}
+
+	bBuilding := Build{
+		ID:          54321,
+		Finished:    0,
+		BuildStatus: -1,
+	}
+	if bBuilding.IsFinished() {
+		t.Errorf("expected bBuilding.IsFinished() == false")
+	}
+	if bBuilding.Status() != StatusStarted {
+		t.Errorf("expected StatusStarted, got %v", bBuilding.Status())
+	}
+}

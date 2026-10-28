@@ -479,4 +479,127 @@ func TestPollerNonguixCoordinationAndVersionResolution(t *testing.T) {
 	}
 }
 
+func TestPollerReconcileStuckPendingBuild(t *testing.T) {
+	var eval600Calls atomic.Int32
+	var buildCalls atomic.Int32
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/evaluations":
+			spec := r.URL.Query().Get("spec")
+			if spec == "guix" {
+				_, _ = w.Write([]byte(`[{"id":1600,"specification":"guix","timestamp":1729170000,"checkouts":[{"commit":"commit600","channel":"guix"}]}]`))
+				return
+			}
+			_, _ = w.Write([]byte(`[{"id":600,"specification":"master","timestamp":1729170000,"checkouts":[{"commit":"commit600","channel":"guix"}]}]`))
+
+		case "/api/jobs":
+			evalID := r.URL.Query().Get("evaluation")
+			switch evalID {
+			case "600":
+				eval600Calls.Add(1)
+				// /api/jobs reports gr-iqbal as status: -3 (scheduled/pending) with build 26715933
+				_, _ = w.Write([]byte(`[
+					{"build":1001,"status":0,"name":"emacs.x86_64-linux"},
+					{"build":26715933,"status":-3,"name":"gr-iqbal.x86_64-linux"}
+				]`))
+			case "1600":
+				_, _ = w.Write([]byte(`[{"build":3600,"status":0,"name":"guix.x86_64-linux"}]`))
+			}
+
+		case "/build/26715933":
+			buildCalls.Add(1)
+			// /build/26715933 shows finished: 1 and buildstatus: 0 (succeeded under another jobset)
+			_, _ = w.Write([]byte(`{
+				"id": 26715933,
+				"finished": 1,
+				"buildstatus": 0,
+				"nixname": "gr-iqbal-0.38.3",
+				"derivation": "/gnu/store/nlkvg0xk2c2lzxs97nd5x2l8s6zqjwaz-gr-iqbal-0.38.3.drv"
+			}`))
+
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	client := cuirass.NewClient(srv.URL, cuirass.WithRetry(2, 5*time.Millisecond))
+	st, err := store.Open(":memory:", srv.URL, []string{"x86_64-linux"})
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+
+	p := New(client, st, Config{
+		Systems:             []string{"x86_64-linux"},
+		Limit:               10,
+		PollInterval:        time.Minute,
+		MaxReconcilePending: 10,
+	})
+
+	ctx := context.Background()
+	if err := p.SyncOnce(ctx); err != nil {
+		t.Fatalf("first SyncOnce failed: %v", err)
+	}
+
+	if eval600Calls.Load() != 1 {
+		t.Fatalf("expected 1 call to eval 600, got %d", eval600Calls.Load())
+	}
+	if buildCalls.Load() != 1 {
+		t.Fatalf("expected 1 call to /build/26715933, got %d", buildCalls.Load())
+	}
+
+	snap := st.Snapshot()
+	data := snap.ByEvalSystem[store.EvalSystemKey{EvalID: 600, System: "x86_64-linux"}]
+	if data == nil {
+		t.Fatalf("expected cached data for eval 600")
+	}
+	if data.PendingJobs != 0 {
+		t.Fatalf("expected PendingJobs == 0 after reconciliation, got %d", data.PendingJobs)
+	}
+	if data.SucceededJobs != 2 {
+		t.Fatalf("expected SucceededJobs == 2 after reconciliation, got %d", data.SucceededJobs)
+	}
+	if !data.Complete {
+		t.Fatalf("expected Complete == true after reconciliation")
+	}
+
+	// Second SyncOnce: evaluation 600 is complete, so it should not be re-polled!
+	if err := p.SyncOnce(ctx); err != nil {
+		t.Fatalf("second SyncOnce failed: %v", err)
+	}
+	if eval600Calls.Load() != 1 {
+		t.Fatalf("expected eval 600 not to be re-fetched after completion, got %d calls", eval600Calls.Load())
+	}
+	if buildCalls.Load() != 1 {
+		t.Fatalf("expected /build/26715933 not to be re-fetched after completion, got %d calls", buildCalls.Load())
+	}
+
+	// Verify resolution in whole-eval mode
+	res, err := resolver.Resolve(st.Snapshot(), resolver.Query{
+		System:     "x86_64-linux",
+		MaxPending: 0,
+	})
+	if err != nil {
+		t.Fatalf("Resolve whole-eval failed: %v", err)
+	}
+	if res.Commit != "commit600" {
+		t.Fatalf("expected commit600, got %s", res.Commit)
+	}
+
+	// Verify resolution in package mode for gr-iqbal
+	resPkg, err := resolver.Resolve(st.Snapshot(), resolver.Query{
+		System:   "x86_64-linux",
+		Packages: []string{"gr-iqbal"},
+	})
+	if err != nil {
+		t.Fatalf("Resolve package mode for gr-iqbal failed: %v", err)
+	}
+	if resPkg.Commit != "commit600" {
+		t.Fatalf("expected commit600 for gr-iqbal, got %s", resPkg.Commit)
+	}
+}
+
+
 

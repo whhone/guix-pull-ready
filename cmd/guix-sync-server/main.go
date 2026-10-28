@@ -31,8 +31,9 @@ func main() {
 		systemsCSV       = flag.String("systems", envOr("GUIX_SYNC_SYSTEMS", "x86_64-linux,aarch64-linux"), "Comma-separated target systems to track")
 		limit            = flag.Int("limit", envIntOr("GUIX_SYNC_LIMIT", 40), "Number of recent master evaluations to track")
 		pollInterval     = flag.Duration("poll-interval", envDurationOr("GUIX_SYNC_POLL_INTERVAL", 10*time.Minute), "Background Cuirass polling interval")
-		concurrency      = flag.Int("concurrency", 2, "Maximum concurrent HTTP requests to Cuirass")
-		maxActiveRefresh = flag.Int("max-active-refresh", envIntOr("GUIX_SYNC_MAX_ACTIVE_REFRESH", 0), "Maximum incomplete evaluations to refresh per system per poll cycle (0 = refresh all incomplete in window)")
+		concurrency         = flag.Int("concurrency", 2, "Maximum concurrent HTTP requests to Cuirass")
+		maxActiveRefresh    = flag.Int("max-active-refresh", envIntOr("GUIX_SYNC_MAX_ACTIVE_REFRESH", 0), "Maximum incomplete evaluations to refresh per system per poll cycle (0 = refresh all incomplete in window)")
+		maxReconcilePending = flag.Int("max-reconcile-pending", envIntOr("GUIX_SYNC_MAX_RECONCILE_PENDING", 10), "Maximum pending jobs per evaluation to reconcile via /build/<id> (0 to disable)")
 	)
 	flag.Parse()
 
@@ -70,13 +71,19 @@ func main() {
 		})
 	}
 
+	reconcileLimit := *maxReconcilePending
+	if reconcileLimit < 0 {
+		reconcileLimit = 0
+	}
+
 	bgPoller := poller.New(client, st, poller.Config{
-		Systems:            systems,
-		Limit:              *limit,
-		PollInterval:       *pollInterval,
-		MaxActiveRefresh:   *maxActiveRefresh,
-		AdditionalChannels: additionalChannels,
-		Logger:             logger,
+		Systems:             systems,
+		Limit:               *limit,
+		PollInterval:        *pollInterval,
+		MaxActiveRefresh:    *maxActiveRefresh,
+		MaxReconcilePending: reconcileLimit,
+		AdditionalChannels:  additionalChannels,
+		Logger:              logger,
 	})
 
 	apiSrv := api.NewServer(st, bgPoller, logger)
