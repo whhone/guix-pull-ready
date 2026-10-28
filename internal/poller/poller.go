@@ -564,36 +564,54 @@ func (p *Poller) reconcilePendingJobs(ctx context.Context, client *cuirass.Clien
 		index   int
 		buildID int64
 	}
-	var pending []pendingItem
+
+	// 1. Fast path: apply previously reconciled build statuses from cache.
+	p.mu.RLock()
 	for i := range jobs {
 		if !strings.HasSuffix(jobs[i].Name, suffix) {
 			continue
 		}
 		if jobs[i].Status.IsPending() && jobs[i].BuildID > 0 {
-			pending = append(pending, pendingItem{index: i, buildID: jobs[i].BuildID})
+			key := store.ChannelBuildKey{Channel: channel, BuildID: jobs[i].BuildID}
+			if cachedStatus, ok := p.reconciledBuilds[key]; ok {
+				jobs[i].Status = cachedStatus
+			}
+		}
+	}
+	p.mu.RUnlock()
+
+	// 2. Collect jobs that remain pending and need Cuirass /build/<id> verification.
+	var stillPending []pendingItem
+	for i := range jobs {
+		if !strings.HasSuffix(jobs[i].Name, suffix) {
+			continue
+		}
+		if jobs[i].Status.IsPending() && jobs[i].BuildID > 0 {
+			stillPending = append(stillPending, pendingItem{index: i, buildID: jobs[i].BuildID})
 		}
 	}
 
-	if len(pending) == 0 || len(pending) > p.cfg.MaxReconcilePending {
+	if len(stillPending) == 0 {
 		return
 	}
 
+	toCheck := stillPending
+	if len(toCheck) > p.cfg.MaxReconcilePending {
+		// Only attempt batch reconciliation when the evaluation is near completion
+		// (within 2x limit) to avoid probing actively compiling evaluations.
+		if len(stillPending) > p.cfg.MaxReconcilePending*2 {
+			return
+		}
+		toCheck = toCheck[:p.cfg.MaxReconcilePending]
+	}
+
 	nixMap := make(map[int64]string)
-	for _, item := range pending {
+	for _, item := range toCheck {
 		if ctx.Err() != nil {
 			return
 		}
 
 		key := store.ChannelBuildKey{Channel: channel, BuildID: item.buildID}
-		p.mu.RLock()
-		cachedStatus, isCached := p.reconciledBuilds[key]
-		p.mu.RUnlock()
-
-		if isCached {
-			jobs[item.index].Status = cachedStatus
-			continue
-		}
-
 		b, err := client.Build(ctx, item.buildID)
 		if err != nil {
 			p.cfg.Logger.Debug("failed to query build for pending job reconciliation",

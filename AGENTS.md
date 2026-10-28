@@ -41,7 +41,7 @@ The repository contains two implementations:
 
 3. **Stuck Pending Build Reconciliation (`/build/<id>`)**:
    - Upstream Cuirass occasionally suffers from database desync where a job remains stuck with status `-3` (scheduled) or `-1` (started) in `/api/jobs`, even though the underlying build succeeded (e.g. built under another jobset like `science-team`).
-   - When an evaluation has $\le \text{MaxReconcilePending}$ (default 10) pending builds, the poller cross-checks `/build/<id>`. If `finished == 1`, it overrides the job status in-place with the canonical `JobStatus(buildstatus)`, allowing evaluations to cleanly transition to `Complete`.
+   - When an evaluation is near completion, the poller cross-checks `/build/<id>` for pending builds (up to `MaxReconcilePending`, default 40). If `finished == 1`, it overrides the job status in-place with the canonical `JobStatus(buildstatus)`, allowing evaluations to cleanly transition to `Complete`.
 
 4. **Cuirass Job Status Codes**:
    - Pending (`IsPending()`): `-3` (`scheduled`), `-2` (`submitted`), `-1` (`started`)

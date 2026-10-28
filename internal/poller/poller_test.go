@@ -601,5 +601,108 @@ func TestPollerReconcileStuckPendingBuild(t *testing.T) {
 	}
 }
 
+func TestPollerIncrementalBatchReconciliation(t *testing.T) {
+	var evalCalls atomic.Int32
+	var buildCalls atomic.Int32
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/evaluations":
+			spec := r.URL.Query().Get("spec")
+			if spec == "guix" {
+				_, _ = w.Write([]byte(`[{"id":1700,"specification":"guix","timestamp":1729170000,"checkouts":[{"commit":"commit700","channel":"guix"}]}]`))
+				return
+			}
+			_, _ = w.Write([]byte(`[{"id":700,"specification":"master","timestamp":1729170000,"checkouts":[{"commit":"commit700","channel":"guix"}]}]`))
+
+		case "/api/jobs":
+			eid := r.URL.Query().Get("evaluation")
+			if eid == "1700" {
+				_, _ = w.Write([]byte(`[{"build":3700,"status":0,"name":"guix.x86_64-linux"}]`))
+				return
+			}
+			if eid == "700" {
+				evalCalls.Add(1)
+				// Evaluation 700 has 5 pending jobs
+				_, _ = w.Write([]byte(`[
+					{"build":7001,"status":-1,"name":"pkg1.x86_64-linux"},
+					{"build":7002,"status":-1,"name":"pkg2.x86_64-linux"},
+					{"build":7003,"status":-1,"name":"pkg3.x86_64-linux"},
+					{"build":7004,"status":-1,"name":"pkg4.x86_64-linux"},
+					{"build":7005,"status":-1,"name":"pkg5.x86_64-linux"}
+				]`))
+				return
+			}
+
+		default:
+			if len(r.URL.Path) > 7 && r.URL.Path[:7] == "/build/" {
+				buildCalls.Add(1)
+				_, _ = w.Write([]byte(`{"finished": 1, "buildstatus": 0}`))
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	client := cuirass.NewClient(srv.URL, cuirass.WithRetry(2, 5*time.Millisecond))
+	st, err := store.Open(":memory:", srv.URL, []string{"x86_64-linux"})
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+
+	// Batch size of 3 with 5 pending jobs (within 2x limit = 6)
+	p := New(client, st, Config{
+		Systems:             []string{"x86_64-linux"},
+		Limit:               10,
+		PollInterval:        time.Minute,
+		MaxReconcilePending: 3,
+	})
+
+	ctx := context.Background()
+
+	// Pass 1: should reconcile 3 jobs, leaving 2 pending
+	if err := p.SyncOnce(ctx); err != nil {
+		t.Fatalf("pass 1 SyncOnce failed: %v", err)
+	}
+	snap := st.Snapshot()
+	data := snap.ByEvalSystem[store.EvalSystemKey{EvalID: 700, System: "x86_64-linux"}]
+	if data.PendingJobs != 2 {
+		t.Fatalf("expected 2 pending jobs after pass 1, got %d", data.PendingJobs)
+	}
+	if data.SucceededJobs != 3 {
+		t.Fatalf("expected 3 succeeded jobs after pass 1, got %d", data.SucceededJobs)
+	}
+	if data.Complete {
+		t.Fatalf("expected eval 700 not complete after pass 1")
+	}
+
+	// Pass 2: should reconcile remaining 2 jobs, reaching 0 pending and Complete!
+	if err := p.SyncOnce(ctx); err != nil {
+		t.Fatalf("pass 2 SyncOnce failed: %v", err)
+	}
+	snap = st.Snapshot()
+	data = snap.ByEvalSystem[store.EvalSystemKey{EvalID: 700, System: "x86_64-linux"}]
+	if data.PendingJobs != 0 {
+		t.Fatalf("expected 0 pending jobs after pass 2, got %d", data.PendingJobs)
+	}
+	if data.SucceededJobs != 5 {
+		t.Fatalf("expected 5 succeeded jobs after pass 2, got %d", data.SucceededJobs)
+	}
+	if !data.Complete {
+		t.Fatalf("expected eval 700 complete after pass 2")
+	}
+
+	// Pass 3: completed evaluation should not be polled anymore
+	if err := p.SyncOnce(ctx); err != nil {
+		t.Fatalf("pass 3 SyncOnce failed: %v", err)
+	}
+	if evalCalls.Load() != 2 {
+		t.Fatalf("expected exactly 2 calls to eval 700, got %d", evalCalls.Load())
+	}
+}
+
+
 
 
