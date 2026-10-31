@@ -273,6 +273,7 @@ func renderPageHead(title string) string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>` + html.EscapeString(title) + `</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.ico">
 <style>
 	:root {
 		color-scheme: light dark;

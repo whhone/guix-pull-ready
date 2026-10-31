@@ -3,6 +3,7 @@
 package api
 
 import (
+	_ "embed" // required for the //go:embed directive below
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -56,11 +57,27 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/", s.handleIndex)
+	s.mux.HandleFunc("/favicon.ico", s.handleFavicon)
 	s.mux.HandleFunc("/healthz", s.handleHealthz)
 	s.mux.HandleFunc("/commit", s.handleCommit)
 	s.mux.HandleFunc("/channels.scm", s.handleChannelsSCM)
 	s.mux.HandleFunc("/status", s.handleStatus)
 	s.mux.HandleFunc("/evaluations", s.handleEvaluations)
+}
+
+//go:embed static/favicon.svg
+var faviconSVG []byte
+
+// handleFavicon serves the SVG favicon with long-lived caching.
+func (s *Server) handleFavicon(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "image/svg+xml")
+	w.Header().Set("Cache-Control", "public, max-age=604800, immutable")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(faviconSVG)
 }
 
 // handleHealthz reports service readiness and background poller status.

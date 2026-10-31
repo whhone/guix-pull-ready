@@ -454,3 +454,36 @@ func TestAdditionalChannelsNonguixAPI(t *testing.T) {
 		t.Fatalf("status = %d, want 400", rec.Code)
 	}
 }
+
+func TestFaviconEndpoint(t *testing.T) {
+	srv := setupTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/favicon.ico", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /favicon.ico status = %d, want 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "image/svg+xml" {
+		t.Fatalf("GET /favicon.ico Content-Type = %q, want image/svg+xml", ct)
+	}
+	if cc := rec.Header().Get("Cache-Control"); !strings.Contains(cc, "max-age=") {
+		t.Fatalf("GET /favicon.ico Cache-Control = %q, want max-age header", cc)
+	}
+	if !strings.Contains(rec.Body.String(), "<svg") || !strings.Contains(rec.Body.String(), "</svg>") {
+		t.Fatalf("GET /favicon.ico body does not contain valid SVG markup")
+	}
+
+	// HTML dashboard should link the favicon
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET / status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `<link rel="icon" type="image/svg+xml" href="/favicon.ico">`) {
+		t.Fatalf("GET / HTML missing favicon link")
+	}
+}
