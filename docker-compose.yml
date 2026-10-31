@@ -1,5 +1,6 @@
 services:
   guix-sync:
+    image: ghcr.io/whhone/guix-pull-ready:latest
     build:
       context: .
       dockerfile: Containerfile

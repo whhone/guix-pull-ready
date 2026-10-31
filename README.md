@@ -66,10 +66,20 @@ guix pull -C <(curl -fsSL "https://guix-pull-ready.whhone.com/channels.scm?addit
 
 ### Run with Podman / Docker Compose
 
-A ready-to-use [`docker-compose.yml`](docker-compose.yml) with Cloudflare Tunnel support is included:
+A ready-to-use [`docker-compose.yml`](docker-compose.yml) with Cloudflare Tunnel support is included. By default, it runs the prebuilt image from GitHub Container Registry (`ghcr.io/whhone/guix-pull-ready:latest`):
 
 ```bash
 cp .env.example .env   # Set your TUNNEL_TOKEN if using a Cloudflare named tunnel
+
+# Run prebuilt image from GHCR (no local build needed)
+podman compose pull && podman compose up -d
+# or with docker compose:
+docker compose pull && docker compose up -d
+```
+
+To build locally from source instead of pulling from GHCR, pass `--build`:
+
+```bash
 podman compose up -d --build
 ```
 
