@@ -4,7 +4,6 @@ package api
 
 import (
 	_ "embed" // required for the //go:embed directive below
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,7 +11,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	"guix-pull-ready/internal/poller"
 	"guix-pull-ready/internal/resolver"
@@ -56,9 +54,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/", s.handleIndex)
 	s.mux.HandleFunc("/favicon.ico", s.handleFavicon)
-	s.mux.HandleFunc("/healthz", s.handleHealthz)
 	s.mux.HandleFunc("/channels.scm", s.handleChannelsSCM)
-	s.mux.HandleFunc("/status", s.handleStatus)
 }
 
 //go:embed static/favicon.svg
@@ -76,63 +72,16 @@ func (s *Server) handleFavicon(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(faviconSVG)
 }
 
-// handleHealthz reports service readiness and background poller status.
-// It returns 503 Service Unavailable while the initial evaluation sync is still warming up.
-func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
-	snap := s.store.Snapshot()
-	var evalCount int
-	var lastSynced time.Time
-	if snap != nil {
-		evalCount = len(snap.Evaluations)
-		lastSynced = snap.LastSyncedAt
-	}
-
-	var syncing bool
-	var lastErrStr string
-	if s.poller != nil {
-		var lastErr error
-		syncing, _, lastErr = s.poller.Status()
-		if lastErr != nil {
-			lastErrStr = lastErr.Error()
-		}
-	}
-
-	status := "ok"
-	httpCode := http.StatusOK
-	if evalCount == 0 {
-		status = "warming_up"
-		httpCode = http.StatusServiceUnavailable
-	}
-
-	writeJSON(w, httpCode, map[string]any{
-		"status":         status,
-		"syncing":        syncing,
-		"evaluations":    evalCount,
-		"last_synced_at": lastSynced,
-		"last_poll_err":  lastErrStr,
-	})
-}
-
 // handleChannelsSCM returns a ready-to-use Guix channels.scm snippet with evaluation metadata comments.
 func (s *Server) handleChannelsSCM(w http.ResponseWriter, r *http.Request) {
 	res, err := s.resolveRequest(r)
 	if err != nil {
-		s.writeResolveError(w, r, err, true)
+		s.writeResolveError(w, r, err)
 		return
 	}
 	w.Header().Set("Content-Type", "text/x-scheme; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.WriteString(w, resolver.FormatChannelsSCM(res))
-}
-
-// handleStatus returns full JSON resolution metadata.
-func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	res, err := s.resolveRequest(r)
-	if err != nil {
-		s.writeResolveError(w, r, err, false)
-		return
-	}
-	writeJSON(w, http.StatusOK, res)
 }
 
 // handleIndex serves the HTML overview page ("/") with the ready commit and copyable commands.
@@ -224,7 +173,7 @@ func (s *Server) resolveRequest(r *http.Request) (*resolver.Result, error) {
 //   - ErrNoTrackedPackages -> 422 Unprocessable Entity (none of the requested packages exist on CI)
 //   - ErrNoReadyEvaluation -> 404 Not Found (no evaluation within the window met criteria)
 //   - Other input errors   -> 400 Bad Request
-func (s *Server) writeResolveError(w http.ResponseWriter, r *http.Request, err error, plain bool) {
+func (s *Server) writeResolveError(w http.ResponseWriter, r *http.Request, err error) {
 	code := http.StatusNotFound
 	switch {
 	case errors.Is(err, resolver.ErrNoEvaluations):
@@ -237,13 +186,9 @@ func (s *Server) writeResolveError(w http.ResponseWriter, r *http.Request, err e
 		code = http.StatusBadRequest
 	}
 
-	if plain {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.WriteHeader(code)
-		_, _ = fmt.Fprintf(w, "error: %s\n", err.Error())
-		return
-	}
-	writeJSON(w, code, map[string]string{"error": err.Error()})
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(code)
+	_, _ = fmt.Fprintf(w, "error: %s\n", err.Error())
 }
 
 func defaultSystem(snap *store.Snapshot) string {
@@ -295,12 +240,4 @@ func parseBoolParam(val string) bool {
 	default:
 		return false
 	}
-}
-
-func writeJSON(w http.ResponseWriter, status int, payload any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	_ = enc.Encode(payload)
 }

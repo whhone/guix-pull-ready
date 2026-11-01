@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,7 +8,6 @@ import (
 	"time"
 
 	"guix-pull-ready/internal/cuirass"
-	"guix-pull-ready/internal/resolver"
 	"guix-pull-ready/internal/store"
 )
 
@@ -150,31 +148,14 @@ func TestChannelsSCM(t *testing.T) {
 	}
 }
 
-func TestStatusJSONAndHealthz(t *testing.T) {
+func TestHealthzEndpointNotFound(t *testing.T) {
 	srv := setupTestServer(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/status?system=x86_64-linux", nil)
-	req.Header.Set("Accept", "application/json")
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-	var res resolver.Result
-	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
-		t.Fatalf("json.Unmarshal: %v", err)
-	}
-	if res.EvaluationID != 699 || !res.PullReady {
-		t.Fatalf("unexpected status result: %+v", res)
-	}
-
-	// Healthz
-	req = httptest.NewRequest(http.MethodGet, "/healthz", nil)
-	rec = httptest.NewRecorder()
-	srv.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("healthz status = %d, want 200", rec.Code)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("healthz status = %d, want 404", rec.Code)
 	}
 }
 
@@ -339,41 +320,15 @@ func TestDashboardDropdownConsistentWithConfiguredSystems(t *testing.T) {
 	}
 }
 
-func TestStatusEndpointAlwaysReturnsJSON(t *testing.T) {
+func TestStatusEndpointNotFound(t *testing.T) {
 	srv := setupTestServer(t)
 
-	// 1. Browser request to /status (Accept: text/html) -> JSON API response
 	req := httptest.NewRequest(http.MethodGet, "/status", nil)
-	req.Header.Set("Accept", "text/html,application/xhtml+xml")
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-	var res resolver.Result
-	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
-		t.Fatalf("json.Unmarshal: %v", err)
-	}
-	if res.EvaluationID != 699 {
-		t.Fatalf("got eval %d, want 699", res.EvaluationID)
-	}
-
-	// 2. Package query to /status?pkgs=emacs,git -> JSON API response
-	req = httptest.NewRequest(http.MethodGet, "/status?pkgs=emacs,git", nil)
-	req.Header.Set("Accept", "text/html")
-	rec = httptest.NewRecorder()
-	srv.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /status?pkgs=... status = %d, want 200", rec.Code)
-	}
-	var pkgRes resolver.Result
-	if err := json.Unmarshal(rec.Body.Bytes(), &pkgRes); err != nil {
-		t.Fatalf("json.Unmarshal: %v", err)
-	}
-	if pkgRes.EvaluationID != 700 {
-		t.Fatalf("got eval %d, want 700", pkgRes.EvaluationID)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET /status code = %d, want 404 (endpoint removed)", rec.Code)
 	}
 }
 func TestRequirePullAlwaysEnforced(t *testing.T) {
@@ -513,22 +468,7 @@ func TestAdditionalChannelsNonguixAPI(t *testing.T) {
 		t.Fatalf("channels.scm missing expected nonguix + guix commits:\n%s", scm)
 	}
 
-	// 3. GET /status?additional_channels=nonguix -> returns JSON with additional_channels
-	req = httptest.NewRequest(http.MethodGet, "/status?additional_channels=nonguix", nil)
-	rec = httptest.NewRecorder()
-	srv.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-	var statusRes resolver.Result
-	if err := json.Unmarshal(rec.Body.Bytes(), &statusRes); err != nil {
-		t.Fatalf("json.Unmarshal: %v", err)
-	}
-	if len(statusRes.AdditionalChannels) != 1 || statusRes.AdditionalChannels[0].Channel != "nonguix" || statusRes.AdditionalChannels[0].EvaluationID != 54 {
-		t.Fatalf("unexpected additional_channels in /status response: %+v", statusRes.AdditionalChannels)
-	}
-
-	// 4. Browser GET / and GET /?additional_channels=nonguix -> toggles nonguix state and column
+	// 3. Browser GET / and GET /?additional_channels=nonguix -> toggles nonguix state and column
 	req = httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Accept", "text/html")
 	rec = httptest.NewRecorder()
@@ -561,7 +501,7 @@ func TestAdditionalChannelsNonguixAPI(t *testing.T) {
 		t.Fatalf("home HTML with ?additional_channels=nonguix did not pre-select nonguix state, table column, pending build link, latest ready row, or substitute setup link")
 	}
 
-	// 5. GET /channels.scm?additional_channels=invalid -> 400 Bad Request
+	// 4. GET /channels.scm?additional_channels=invalid -> 400 Bad Request
 	req = httptest.NewRequest(http.MethodGet, "/channels.scm?additional_channels=invalid", nil)
 	rec = httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
