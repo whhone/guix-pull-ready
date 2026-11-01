@@ -13,10 +13,54 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// DefaultSystems lists the target architectures tracked by default.
+var DefaultSystems = []string{"x86_64-linux", "aarch64-linux"}
+
+// GuixJobsetSystems lists architectures built by the "guix" jobset on ci.guix.gnu.org.
+var GuixJobsetSystems = []string{"x86_64-linux", "i686-linux"}
+
+// NonguixJobsetSystems lists architectures built by the "nonguix" jobset on cuirass.nonguix.org.
+var NonguixJobsetSystems = []string{"x86_64-linux", "aarch64-linux"}
+
+// SupportsGuixJobset reports whether the "guix" jobset on ci.guix.gnu.org builds substitutes for system.
+func SupportsGuixJobset(system string) bool {
+	return slices.Contains(GuixJobsetSystems, system)
+}
+
+// SupportsNonguixJobset reports whether the "nonguix" jobset on cuirass.nonguix.org builds substitutes for system.
+func SupportsNonguixJobset(system string) bool {
+	return slices.Contains(NonguixJobsetSystems, system)
+}
+
+// SupportsChannelJobset reports whether the given channel's Cuirass jobset builds substitutes for system.
+func SupportsChannelJobset(channel, system string) bool {
+	switch channel {
+	case "", "guix":
+		return true
+	case "nonguix":
+		return SupportsNonguixJobset(system)
+	default:
+		return false
+	}
+}
+
+// DefaultChannelServerURL returns the default Cuirass base URL for a given channel.
+func DefaultChannelServerURL(channel string) string {
+	switch channel {
+	case "", "guix":
+		return "https://ci.guix.gnu.org"
+	case "nonguix":
+		return "https://cuirass.nonguix.org"
+	default:
+		return ""
+	}
+}
 
 // JobStatus represents the build status of a Cuirass job.
 // Status codes match (guix ci) integer->build-status in GNU Guix:

@@ -6,7 +6,7 @@
 
 The repository contains two implementations:
 1. **`guix-sync-commit.scm`**: Standalone Guile Scheme CLI script (`guix repl -- guix-sync-commit.scm [OPTIONS] [SPEC...]`).
-2. **`guix-pull-ready`**: Zero-dependency Go HTTP service that polls Cuirass in the background, caches evaluation and job states locally, and serves instant HTTP responses (`text/plain`, `channels.scm`, and `application/json`).
+2. **`guix-pull-ready`**: Zero-dependency Go HTTP service that polls Cuirass in the background, caches evaluation and job states locally, and serves instant HTTP responses (`channels.scm`, `application/json`, and HTML).
 
 ---
 
@@ -16,7 +16,7 @@ The repository contains two implementations:
 .
 ├── cmd/guix-pull-ready/main.go    # Go service entrypoint and CLI flags
 ├── internal/
-│   ├── api/                       # HTTP handlers (/commit, /channels.scm, /status, /healthz, /favicon.ico, /)
+│   ├── api/                       # HTTP handlers (/channels.scm, /status, /healthz, /favicon.ico, /)
 │   ├── cuirass/                   # Cuirass REST client, JobStatus enum, nixname parsing, Guix VersionGreater
 │   ├── poller/                    # Incremental background poller and lazy /build/<id> version resolver
 │   ├── resolver/                  # Whole-evaluation and package-list query resolution engine
@@ -111,23 +111,15 @@ The service listens on `:8080` by default. All endpoints accept `GET` requests w
 
 ### Endpoints
 
-#### 1. Plain-Text Commit Hash (`GET /commit`)
-Returns raw 40-character Git commit hash followed by a newline (`text/plain`). Ideal for shell command substitution.
-
-```bash
-# Get latest ready commit for current architecture (whole-evaluation mode)
-curl -fsSL "http://localhost:8080/commit"
-
-# Package mode: find commit where emacs, git, and gcc-toolchain 14 are ready
-curl -fsSL "http://localhost:8080/commit?pkgs=emacs,git,gcc-toolchain@14"
-```
-
-#### 2. Channel Specification (`GET /channels.scm`)
+#### 1. Channel Specification (`GET /channels.scm`)
 Returns a Scheme snippet (`text/x-scheme`) with evaluation metadata in comments, ready for `guix pull -C`, `downloaded-channels`, `~/.config/guix/channels.scm`, or `guix time-machine`.
 
 ```bash
 # Pull latest ready commit directly
 guix pull -C <(curl -fsSL "http://localhost:8080/channels.scm")
+
+# Pull latest ready commit for aarch64-linux
+guix pull -C <(curl -fsSL "http://localhost:8080/channels.scm?system=aarch64-linux")
 
 # Pull both guix and nonguix at their coordinated ready commits
 guix pull -C <(curl -fsSL "http://localhost:8080/channels.scm?additional_channels=nonguix")
@@ -139,7 +131,7 @@ curl -fsSL "http://localhost:8080/channels.scm?system=x86_64-linux" > ~/.config/
 guix time-machine -C <(curl -fsSL "http://localhost:8080/channels.scm?pkgs=emacs,git") -- shell emacs git
 ```
 
-#### 3. Evaluation Status Details (`GET /status`)
+#### 2. Evaluation Status Details (`GET /status`)
 Returns full JSON metadata (`application/json`) including commit, evaluation ID, lag behind master, job counts, and `guix pull` readiness.
 
 ```bash
@@ -150,15 +142,15 @@ curl -fsSL "http://localhost:8080/status?system=x86_64-linux"
 curl -fsSL "http://localhost:8080/status?pkgs=emacs,git,my-custom-pkg"
 ```
 
-#### 4. Health Check (`GET /healthz`)
+#### 3. Health Check (`GET /healthz`)
 Returns service and poller status for monitoring and container health checks.
 
 ```bash
 curl -fsSL "http://localhost:8080/healthz"
 ```
 
-#### 5. Service Overview & Usage (`GET /`)
-Returns an HTML dashboard table of recent evaluations, ready commits, and copyable CLI commands.
+#### 4. Service Overview & Usage (`GET /`)
+Returns an HTML dashboard table of recent evaluations, ready commits, and copyable CLI commands (supports `?system=aarch64-linux` and `?additional_channels=nonguix`).
 
 ---
 

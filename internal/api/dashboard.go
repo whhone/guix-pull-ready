@@ -6,27 +6,38 @@ import (
 	"strings"
 	"time"
 
+	"guix-pull-ready/internal/cuirass"
 	"guix-pull-ready/internal/resolver"
 	"guix-pull-ready/internal/store"
 )
 
+// channelEvalSummary holds the evaluation and pending build state for an additional channel
+// coordinated with a primary Guix commit.
+type channelEvalSummary struct {
+	Channel       string
+	EvalID        int64
+	Commit        string
+	Ready         bool
+	PendingJobs   int
+	PendingBuilds []store.PendingBuild
+	PendingSample []string
+	ServerURL     string
+}
+
 type evaluationSummaryItem struct {
-	EvaluationID     int64
-	Commit           string
-	Timestamp        time.Time
-	PendingJobs      int
-	PullReady        bool
-	PullEvalID       int64
-	NonguixEvalID    int64
-	NonguixCommit    string
-	NonguixReady     bool
-	NonguixServerURL string
+	EvaluationID       int64
+	Commit             string
+	Timestamp          time.Time
+	PendingJobs        int
+	PullReady          bool
+	PullEvalID         int64
+	AdditionalChannels map[string]channelEvalSummary
 }
 
 type systemOverview struct {
 	System             string
 	StrictReady        *resolver.Result
-	NonguixStrictReady *resolver.Result
+	ChannelStrictReady map[string]*resolver.Result
 	Evaluations        []evaluationSummaryItem
 }
 
@@ -42,27 +53,58 @@ type dashboardState struct {
 
 // buildDashboardState assembles the view state across all tracked architectures
 // for the HTML dashboard.
-func buildDashboardState(baseURL string, snap *store.Snapshot) dashboardState {
+func buildDashboardState(baseURL string, snap *store.Snapshot, reqSystem string) dashboardState {
+	defaultSystems := cuirass.DefaultSystems
 	st := dashboardState{
 		BaseURL:      baseURL,
 		ServerURL:    "https://ci.guix.gnu.org",
-		ActiveSystem: "x86_64-linux",
+		ActiveSystem: defaultSystems[0],
+		Systems:      append([]string(nil), defaultSystems...),
 		BySystem:     make(map[string]systemOverview),
 	}
 
-	if snap == nil {
-		return st
+	if snap != nil {
+		st.ServerURL = snap.ServerURL
+		st.LastSyncedAt = snap.LastSyncedAt
+		seen := make(map[string]bool, len(snap.Systems)+len(defaultSystems))
+		var systems []string
+		for _, sys := range snap.Systems {
+			if sys != "" && !seen[sys] {
+				seen[sys] = true
+				systems = append(systems, sys)
+			}
+		}
+		for _, sys := range defaultSystems {
+			if !seen[sys] {
+				seen[sys] = true
+				systems = append(systems, sys)
+			}
+		}
+		st.Systems = systems
+
+		for _, sys := range st.Systems {
+			st.BySystem[sys] = buildSystemOverview(snap, sys, 40)
+		}
 	}
 
-	st.ServerURL = snap.ServerURL
-	st.Systems = append([]string(nil), snap.Systems...)
-	st.LastSyncedAt = snap.LastSyncedAt
-
-	for _, sys := range snap.Systems {
-		st.BySystem[sys] = buildSystemOverview(snap, sys, 40)
+	if reqSystem != "" {
+		for _, sys := range st.Systems {
+			if sys == reqSystem {
+				st.ActiveSystem = reqSystem
+				return st
+			}
+		}
 	}
-	if _, ok := st.BySystem["x86_64-linux"]; !ok && len(snap.Systems) > 0 {
-		st.ActiveSystem = snap.Systems[0]
+
+	hasDefault := false
+	for _, sys := range st.Systems {
+		if sys == "x86_64-linux" {
+			hasDefault = true
+			break
+		}
+	}
+	if !hasDefault && len(st.Systems) > 0 {
+		st.ActiveSystem = st.Systems[0]
 	}
 
 	return st
@@ -71,8 +113,9 @@ func buildDashboardState(baseURL string, snap *store.Snapshot) dashboardState {
 // buildSystemOverview summarizes up to limit recent evaluations for a target architecture.
 func buildSystemOverview(snap *store.Snapshot, sys string, limit int) systemOverview {
 	ov := systemOverview{
-		System:      sys,
-		Evaluations: make([]evaluationSummaryItem, 0, limit),
+		System:             sys,
+		ChannelStrictReady: make(map[string]*resolver.Result, len(resolver.SupportedAdditionalChannels)),
+		Evaluations:        make([]evaluationSummaryItem, 0, limit),
 	}
 	if snap == nil {
 		return ov
@@ -81,63 +124,99 @@ func buildSystemOverview(snap *store.Snapshot, sys string, limit int) systemOver
 	if strict, err := resolver.Resolve(snap, resolver.Query{System: sys, MaxPending: 0, Limit: limit}); err == nil {
 		ov.StrictReady = strict
 	}
-	if ngStrict, err := resolver.Resolve(snap, resolver.Query{
-		System:             sys,
-		MaxPending:         0,
-		Limit:              limit,
-		AdditionalChannels: []string{"nonguix"},
-	}); err == nil {
-		ov.NonguixStrictReady = ngStrict
-	}
-
-	ngServerURL := snap.ChannelServerURLs["nonguix"]
-	if ngServerURL == "" {
-		ngServerURL = "https://cuirass.nonguix.org"
+	for _, ch := range resolver.SupportedAdditionalChannels {
+		if chStrict, err := resolver.Resolve(snap, resolver.Query{
+			System:             sys,
+			MaxPending:         0,
+			Limit:              limit,
+			AdditionalChannels: []string{ch},
+		}); err == nil {
+			ov.ChannelStrictReady[ch] = chStrict
+		}
 	}
 
 	for _, ev := range snap.Evaluations {
-		if len(ov.Evaluations) >= limit {
-			break
-		}
 		data, ok := snap.ByEvalSystem[store.EvalSystemKey{EvalID: ev.ID, System: sys}]
 		if !ok || data.TotalJobs == 0 {
 			continue
 		}
 
 		item := evaluationSummaryItem{
-			EvaluationID: ev.ID,
-			Commit:       ev.Commit,
-			Timestamp:    ev.Timestamp,
-			PendingJobs:  data.PendingJobs,
-			PullReady:    data.PullReady,
-			PullEvalID:   data.PullEvalID,
+			EvaluationID:       ev.ID,
+			Commit:             ev.Commit,
+			Timestamp:          ev.Timestamp,
+			PendingJobs:        data.PendingJobs,
+			PullReady:          data.PullReady,
+			PullEvalID:         data.PullEvalID,
+			AdditionalChannels: make(map[string]channelEvalSummary, len(resolver.SupportedAdditionalChannels)),
 		}
-		for _, ngEv := range snap.ChannelEvaluations["nonguix"] {
-			if ngEv.Checkouts["guix"] != ev.Commit {
-				continue
+		hasAdditionalChannelEval := false
+		for _, ch := range resolver.SupportedAdditionalChannels {
+			if chSum, ok := matchChannelEvaluation(snap, ch, ev.Commit, sys); ok {
+				item.AdditionalChannels[ch] = chSum
+				hasAdditionalChannelEval = true
 			}
-			ngData, ok := snap.ByChannelEvalSystem[store.ChannelEvalSystemKey{
-				Channel: "nonguix",
-				EvalID:  ngEv.ID,
-				System:  sys,
-			}]
-			if !ok || ngData.TotalJobs == 0 {
-				continue
+		}
+
+		isStrictReady := ov.StrictReady != nil && ov.StrictReady.EvaluationID == ev.ID
+		if !isStrictReady {
+			for _, chRes := range ov.ChannelStrictReady {
+				if chRes != nil && chRes.EvaluationID == ev.ID {
+					isStrictReady = true
+					break
+				}
 			}
-			if item.NonguixEvalID == 0 || (!item.NonguixReady && ngData.PendingJobs == 0) {
-				item.NonguixEvalID = ngEv.ID
-				item.NonguixCommit = ngEv.Commit
-				item.NonguixReady = ngData.PendingJobs == 0
-				item.NonguixServerURL = ngServerURL
-			}
-			if item.NonguixReady {
-				break
-			}
+		}
+		if len(ov.Evaluations) >= limit && !hasAdditionalChannelEval && !isStrictReady {
+			continue
 		}
 		ov.Evaluations = append(ov.Evaluations, item)
 	}
 
 	return ov
+}
+
+// matchChannelEvaluation finds the best evaluation for an additional channel paired with guixCommit on sys.
+// It prefers a ready evaluation (PendingJobs == 0) over a pending one if multiple evaluations exist for the same Guix checkout.
+func matchChannelEvaluation(snap *store.Snapshot, channel, guixCommit, sys string) (channelEvalSummary, bool) {
+	if !cuirass.SupportsChannelJobset(channel, sys) {
+		return channelEvalSummary{}, false
+	}
+	serverURL := snap.ChannelServerURLs[channel]
+	if serverURL == "" {
+		serverURL = cuirass.DefaultChannelServerURL(channel)
+	}
+
+	var matched channelEvalSummary
+	for _, chEv := range snap.ChannelEvaluations[channel] {
+		if chEv.Checkouts["guix"] != guixCommit {
+			continue
+		}
+		chData, ok := snap.ByChannelEvalSystem[store.ChannelEvalSystemKey{
+			Channel: channel,
+			EvalID:  chEv.ID,
+			System:  sys,
+		}]
+		if !ok || chData.TotalJobs == 0 {
+			continue
+		}
+		if matched.EvalID == 0 || (!matched.Ready && chData.PendingJobs == 0) {
+			matched = channelEvalSummary{
+				Channel:       channel,
+				EvalID:        chEv.ID,
+				Commit:        chEv.Commit,
+				Ready:         chData.PendingJobs == 0,
+				PendingJobs:   chData.PendingJobs,
+				PendingBuilds: chData.PendingBuilds,
+				PendingSample: chData.PendingSample,
+				ServerURL:     serverURL,
+			}
+		}
+		if matched.Ready {
+			break
+		}
+	}
+	return matched, matched.EvalID > 0
 }
 
 // renderHTMLDashboard renders the main landing page ("/") with a short service overview,
@@ -149,11 +228,11 @@ func renderHTMLDashboard(st dashboardState) string {
 	escServerURL := html.EscapeString(st.ServerURL)
 
 	b.WriteString(renderPageHead("Guix Pull with All Prebuilts Ready"))
-	b.WriteString(renderPageHeader(st.RequireNonguix))
+	b.WriteString(renderPageHeader(st))
 
 	b.WriteString(`<main>`)
 	b.WriteString(renderIntroBlock())
-	b.WriteString(renderCLIExamplesBlock(escBaseURL, st.RequireNonguix))
+	b.WriteString(renderCLIExamplesBlock(escBaseURL, st.ActiveSystem, st.RequireNonguix))
 	b.WriteString(renderEvaluationsTable(ov, escServerURL, st.RequireNonguix))
 	b.WriteString(`</main>`)
 
@@ -241,6 +320,24 @@ func renderPageHead(title string) string {
 		color: var(--text);
 		text-decoration: none;
 	}
+	.site-header-element-right {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+	}
+	select.arch-select {
+		padding: 0.3rem 0.6rem;
+		font-size: 0.85rem;
+		border-radius: 5px;
+		border: 1px solid var(--border);
+		background: var(--code-bg);
+		color: var(--text);
+		cursor: pointer;
+		font-weight: 500;
+	}
+	select.arch-select:hover {
+		background: var(--btn-hover);
+	}
 
 	/* Main Container */
 	main {
@@ -264,6 +361,7 @@ func renderPageHead(title string) string {
 	}
 	.badge-ok { background: var(--ok-bg); color: var(--ok-text); }
 	.badge-warn { background: var(--warn-bg); color: var(--warn-text); }
+	.badge-muted { background: var(--code-bg); color: var(--muted); border: 1px solid var(--border); }
 
 	/* Panels */
 	.panel {
@@ -417,17 +515,40 @@ function formatLocalTimes() {
 `
 }
 
-func renderPageHeader(requireNonguix bool) string {
-	querySuffix := ""
+func buildQuerySuffix(activeSystem string, requireNonguix bool) string {
+	var params []string
+	if activeSystem != "" && activeSystem != "x86_64-linux" {
+		params = append(params, "system="+activeSystem)
+	}
 	if requireNonguix {
-		querySuffix = "?additional_channels=nonguix"
+		params = append(params, "additional_channels=nonguix")
+	}
+	if len(params) == 0 {
+		return ""
+	}
+	return "?" + strings.Join(params, "&")
+}
+
+func renderPageHeader(st dashboardState) string {
+	querySuffix := html.EscapeString(buildQuerySuffix(st.ActiveSystem, st.RequireNonguix))
+	var options strings.Builder
+	for _, sys := range st.Systems {
+		sel := ""
+		if sys == st.ActiveSystem {
+			sel = " selected"
+		}
+		escSys := html.EscapeString(sys)
+		fmt.Fprintf(&options, `<option value="%s"%s>%s</option>`, escSys, sel, escSys)
 	}
 
 	return fmt.Sprintf(`
 	<header class="site-header-container">
 		<strong class="site-header-element-left"><a href="/%s">Guix Pull with All Prebuilts Ready</a></strong>
+		<div class="site-header-element-right">
+			<select id="arch-select" class="arch-select mono" aria-label="Target architecture" onchange="changeSystem(this.value)">%s</select>
+		</div>
 	</header>
-`, querySuffix)
+`, querySuffix, options.String())
 }
 
 func renderIntroBlock() string {
@@ -441,7 +562,7 @@ func renderIntroBlock() string {
 `
 }
 
-func renderCLIExamplesBlock(escBaseURL string, requireNonguix bool) string {
+func renderCLIExamplesBlock(escBaseURL string, activeSystem string, requireNonguix bool) string {
 	var b strings.Builder
 	checkedAttr := ""
 	guixStyle := ""
@@ -451,6 +572,9 @@ func renderCLIExamplesBlock(escBaseURL string, requireNonguix bool) string {
 		guixStyle = ` style="display:none;"`
 		ngStyle = ""
 	}
+	guixChannelsURL := escBaseURL + "/channels.scm" + html.EscapeString(buildQuerySuffix(activeSystem, false))
+	ngChannelsURL := escBaseURL + "/channels.scm" + html.EscapeString(buildQuerySuffix(activeSystem, true))
+
 	b.WriteString(`<div class="panel">`)
 	b.WriteString(`<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem;">`)
 	b.WriteString(`<h2 style="margin:0;">Usage</h2>`)
@@ -462,22 +586,22 @@ func renderCLIExamplesBlock(escBaseURL string, requireNonguix bool) string {
 			<div class="example-item">
 				<div class="example-desc">Pull the newest ready commit dynamically via API:</div>
 				<div class="code-box-row">
-					<pre class="mono">guix pull -C &lt;(curl -fsSL "%s/channels.scm")</pre>
-					<button type="button" class="btn" data-copy="guix pull -C &lt;(curl -fsSL &quot;%s/channels.scm&quot;)" onclick="copyFromBtn(this)">Copy</button>
+					<pre class="mono">guix pull -C &lt;(curl -fsSL "%s")</pre>
+					<button type="button" class="btn" data-copy="guix pull -C &lt;(curl -fsSL &quot;%s&quot;)" onclick="copyFromBtn(this)">Copy</button>
 				</div>
 			</div>
 			<div class="example-item">
 				<div class="example-desc">Track automatically via ~/.config/guix/channels.scm:</div>
 				<div class="code-box-row">
-					<pre class="mono">(downloaded-channels "%s/channels.scm")</pre>
-					<button type="button" class="btn" data-copy="(downloaded-channels &quot;%s/channels.scm&quot;)" onclick="copyFromBtn(this)">Copy</button>
+					<pre class="mono">(downloaded-channels "%s")</pre>
+					<button type="button" class="btn" data-copy="(downloaded-channels &quot;%s&quot;)" onclick="copyFromBtn(this)">Copy</button>
 				</div>
 				<div style="margin-top:0.35rem;font-size:0.8rem;color:var(--muted);">See GNU Guix manual on <a href="https://guix.gnu.org/manual/devel/en/html_node/Channels-with-Substitutes.html" target="_blank" rel="noopener">Channels with Substitutes</a>.</div>
 			</div>
 		</div>`,
 		guixStyle,
-		escBaseURL, escBaseURL,
-		escBaseURL, escBaseURL,
+		guixChannelsURL, guixChannelsURL,
+		guixChannelsURL, guixChannelsURL,
 	)
 
 	fmt.Fprintf(&b, `
@@ -488,23 +612,23 @@ func renderCLIExamplesBlock(escBaseURL string, requireNonguix bool) string {
 			<div class="example-item">
 				<div class="example-desc">Pull both guix and nonguix at their coordinated ready commits:</div>
 				<div class="code-box-row">
-					<pre class="mono">guix pull -C &lt;(curl -fsSL "%s/channels.scm?additional_channels=nonguix")</pre>
-					<button type="button" class="btn" data-copy="guix pull -C &lt;(curl -fsSL &quot;%s/channels.scm?additional_channels=nonguix&quot;)" onclick="copyFromBtn(this)">Copy</button>
+					<pre class="mono">guix pull -C &lt;(curl -fsSL "%s")</pre>
+					<button type="button" class="btn" data-copy="guix pull -C &lt;(curl -fsSL &quot;%s&quot;)" onclick="copyFromBtn(this)">Copy</button>
 				</div>
 			</div>
 			<div class="example-item">
 				<div class="example-desc">Track both channels automatically via ~/.config/guix/channels.scm:</div>
 				<div class="code-box-row">
-					<pre class="mono">(downloaded-channels "%s/channels.scm?additional_channels=nonguix")</pre>
-					<button type="button" class="btn" data-copy="(downloaded-channels &quot;%s/channels.scm?additional_channels=nonguix&quot;)" onclick="copyFromBtn(this)">Copy</button>
+					<pre class="mono">(downloaded-channels "%s")</pre>
+					<button type="button" class="btn" data-copy="(downloaded-channels &quot;%s&quot;)" onclick="copyFromBtn(this)">Copy</button>
 				</div>
 				<div style="margin-top:0.35rem;font-size:0.8rem;color:var(--muted);">See GNU Guix manual on <a href="https://guix.gnu.org/manual/devel/en/html_node/Channels-with-Substitutes.html" target="_blank" rel="noopener">Channels with Substitutes</a>.</div>
 			</div>
 		</div>
 	</div>`,
 		ngStyle,
-		escBaseURL, escBaseURL,
-		escBaseURL, escBaseURL,
+		ngChannelsURL, ngChannelsURL,
+		ngChannelsURL, ngChannelsURL,
 	)
 	return b.String()
 }
@@ -520,8 +644,8 @@ func renderEvaluationsTable(ov systemOverview, escServerURL string, requireNongu
 		latestGuixEvalID = ov.StrictReady.EvaluationID
 	}
 	var latestNgEvalID int64
-	if ov.NonguixStrictReady != nil {
-		latestNgEvalID = ov.NonguixStrictReady.EvaluationID
+	if ngReady := ov.ChannelStrictReady["nonguix"]; ngReady != nil {
+		latestNgEvalID = ngReady.EvaluationID
 	}
 
 	fmt.Fprintf(&b, `
@@ -588,14 +712,20 @@ func renderEvaluationsTable(ov systemOverview, escServerURL string, requireNongu
 					html.EscapeString(isoStr), html.EscapeString(utcStr), html.EscapeString(shortUTC))
 			}
 
-			pullBadge := `<span class="badge badge-warn">Pending</span>`
-			if item.PullReady {
-				pullBadge = `<span class="badge badge-ok">Ready</span>`
-			}
-			pullCell := pullBadge
-			if item.PullEvalID > 0 {
-				pullCell = fmt.Sprintf(`<div style="display:inline-flex;align-items:center;gap:0.4rem;"><a href="%s/eval/%d" target="_blank" rel="noopener" class="mono"><strong>#%d</strong></a>%s</div>`,
-					escServerURL, item.PullEvalID, item.PullEvalID, pullBadge)
+			var pullCell string
+			if !cuirass.SupportsGuixJobset(ov.System) {
+				pullCell = fmt.Sprintf(`<span class="badge badge-muted" title="ci.guix.gnu.org does not build the guix jobset for %s">Not built</span>`,
+					html.EscapeString(ov.System))
+			} else {
+				pullBadge := `<span class="badge badge-warn">Pending</span>`
+				if item.PullReady {
+					pullBadge = `<span class="badge badge-ok">Ready</span>`
+				}
+				pullCell = pullBadge
+				if item.PullEvalID > 0 {
+					pullCell = fmt.Sprintf(`<div style="display:inline-flex;align-items:center;gap:0.4rem;"><a href="%s/eval/%d" target="_blank" rel="noopener" class="mono"><strong>#%d</strong></a>%s</div>`,
+						escServerURL, item.PullEvalID, item.PullEvalID, pullBadge)
+				}
 			}
 
 			masterBadge := `<span class="badge badge-warn">Pending</span>`
@@ -605,17 +735,7 @@ func renderEvaluationsTable(ov systemOverview, escServerURL string, requireNongu
 			masterCell := fmt.Sprintf(`<div style="display:inline-flex;align-items:center;gap:0.4rem;"><a href="%s/eval/%d" target="_blank" rel="noopener" class="mono"><strong>#%d</strong></a>%s</div>`,
 				escServerURL, item.EvaluationID, item.EvaluationID, masterBadge)
 
-			nonguixCell := `<span style="color:var(--muted);font-size:0.8rem;" title="No nonguix evaluation against this Guix commit">-</span>`
-			if item.NonguixEvalID > 0 {
-				escNgServer := html.EscapeString(item.NonguixServerURL)
-				shortNgCommit := html.EscapeString(shortCommit(item.NonguixCommit))
-				ngBadge := `<span class="badge badge-warn">Pending</span>`
-				if item.NonguixReady {
-					ngBadge = `<span class="badge badge-ok">Ready</span>`
-				}
-				nonguixCell = fmt.Sprintf(`<div style="display:inline-flex;align-items:center;gap:0.4rem;"><a href="%s/eval/%d" target="_blank" rel="noopener" class="mono" title="nonguix commit %s"><strong>#%d</strong></a>%s</div>`,
-					escNgServer, item.NonguixEvalID, shortNgCommit, item.NonguixEvalID, ngBadge)
-			}
+			nonguixCell := renderChannelCell("nonguix", item, ov.System)
 
 			fmt.Fprintf(&b, `
 					<tr%s>
@@ -644,6 +764,93 @@ func renderEvaluationsTable(ov systemOverview, escServerURL string, requireNongu
 	}
 	b.WriteString(`</div>`)
 	return b.String()
+}
+
+func renderChannelCell(channel string, item evaluationSummaryItem, sys string) string {
+	if !cuirass.SupportsChannelJobset(channel, sys) {
+		serverHost := strings.TrimPrefix(cuirass.DefaultChannelServerURL(channel), "https://")
+		if serverHost == "" {
+			serverHost = channel
+		}
+		return fmt.Sprintf(`<span class="badge badge-muted" title="%s does not build substitutes for %s">Not built</span>`,
+			html.EscapeString(serverHost), html.EscapeString(sys))
+	}
+	chSum, ok := item.AdditionalChannels[channel]
+	if !ok || chSum.EvalID == 0 {
+		return fmt.Sprintf(`<span style="color:var(--muted);font-size:0.8rem;" title="No %s evaluation against this Guix commit">-</span>`,
+			html.EscapeString(channel))
+	}
+
+	escServer := html.EscapeString(chSum.ServerURL)
+	shortChCommit := html.EscapeString(shortCommit(chSum.Commit))
+	escChannel := html.EscapeString(channel)
+	if chSum.Ready {
+		return fmt.Sprintf(`<div style="display:inline-flex;align-items:center;gap:0.4rem;"><a href="%s/eval/%d" target="_blank" rel="noopener" class="mono" title="%s commit %s"><strong>#%d</strong></a><span class="badge badge-ok">Ready</span></div>`,
+			escServer, chSum.EvalID, escChannel, shortChCommit, chSum.EvalID)
+	}
+
+	builds := chSum.PendingBuilds
+	if len(builds) == 0 && len(chSum.PendingSample) > 0 {
+		builds = make([]store.PendingBuild, len(chSum.PendingSample))
+		for i, name := range chSum.PendingSample {
+			builds[i] = store.PendingBuild{JobName: name}
+		}
+	}
+
+	var sampleNames []string
+	for _, pb := range builds {
+		if pb.JobName != "" {
+			sampleNames = append(sampleNames, pb.JobName)
+		}
+	}
+	var badgeTitleAttr string
+	var tooltip string
+	if len(sampleNames) > 0 {
+		tooltip = "Pending jobs: " + strings.Join(sampleNames, ", ")
+		if chSum.PendingJobs > len(sampleNames) {
+			tooltip += fmt.Sprintf(" (+%d more)", chSum.PendingJobs-len(sampleNames))
+		}
+		badgeTitleAttr = fmt.Sprintf(` title="%s"`, html.EscapeString(tooltip))
+	}
+
+	badgeLabel := "Pending"
+	if chSum.PendingJobs > 0 {
+		badgeLabel = fmt.Sprintf("Pending (%d)", chSum.PendingJobs)
+	}
+	chBadge := fmt.Sprintf(`<span class="badge badge-warn"%s>%s</span>`, badgeTitleAttr, badgeLabel)
+
+	var detailsHTML string
+	if len(builds) > 0 {
+		maxShow := 2
+		if len(builds) < maxShow {
+			maxShow = len(builds)
+		}
+		var parts []string
+		for i := 0; i < maxShow; i++ {
+			pb := builds[i]
+			pkg := store.BasePackageFromJobName(pb.JobName, sys)
+			if pkg == "" {
+				pkg = pb.JobName
+			}
+			escPkg := html.EscapeString(pkg)
+			escJob := html.EscapeString(pb.JobName)
+			if pb.BuildID > 0 {
+				parts = append(parts, fmt.Sprintf(`<a href="%s/build/%d/details" target="_blank" rel="noopener" class="mono" title="Pending build #%d (%s)">%s</a>`,
+					escServer, pb.BuildID, pb.BuildID, escJob, escPkg))
+			} else {
+				parts = append(parts, fmt.Sprintf(`<span class="mono" title="Pending job %s">%s</span>`, escJob, escPkg))
+			}
+		}
+		extra := ""
+		if chSum.PendingJobs > maxShow {
+			extra = fmt.Sprintf(` <span%s>+%d more</span>`, badgeTitleAttr, chSum.PendingJobs-maxShow)
+		}
+		detailsHTML = fmt.Sprintf(`<span style="font-size:0.78rem;color:var(--muted);">%s%s</span>`,
+			strings.Join(parts, ", "), extra)
+	}
+
+	return fmt.Sprintf(`<div style="display:inline-flex;align-items:center;gap:0.4rem;flex-wrap:wrap;"><a href="%s/eval/%d" target="_blank" rel="noopener" class="mono" title="%s commit %s"><strong>#%d</strong></a>%s%s</div>`,
+		escServer, chSum.EvalID, escChannel, shortChCommit, chSum.EvalID, chBadge, detailsHTML)
 }
 
 func renderFooter(st dashboardState) string {
@@ -711,6 +918,16 @@ function fallbackCopy(text, onDone) {
 	}
 }
 
+function changeSystem(sys) {
+	const url = new URL(window.location.href);
+	if (sys && sys !== "x86_64-linux") {
+		url.searchParams.set("system", sys);
+	} else {
+		url.searchParams.delete("system");
+	}
+	window.location.href = url.pathname + url.search + url.hash;
+}
+
 function syncNonguixURLParam(checked) {
 	if (!window.history || !window.history.replaceState) return;
 	const url = new URL(window.location.href);
@@ -721,8 +938,7 @@ function syncNonguixURLParam(checked) {
 	}
 	window.history.replaceState(null, "", url.pathname + url.search + url.hash);
 	const homeLink = document.querySelector(".site-header-element-left a");
-	const suffix = checked ? "?additional_channels=nonguix" : "";
-	if (homeLink) homeLink.setAttribute("href", "/" + suffix);
+	if (homeLink) homeLink.setAttribute("href", "/" + url.search);
 }
 
 function toggleMainNonguix(checked) {

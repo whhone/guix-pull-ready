@@ -15,7 +15,7 @@ import (
 
 func setupTestServer(t *testing.T) *Server {
 	t.Helper()
-	st, err := store.Open(":memory:", "https://ci.guix.gnu.org", []string{"x86_64-linux"})
+	st, err := store.Open(":memory:", "https://ci.guix.gnu.org", []string{"x86_64-linux", "aarch64-linux"})
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
@@ -26,7 +26,7 @@ func setupTestServer(t *testing.T) *Server {
 		{ID: 699, Commit: "ffff6666eeee7777dddd8888cccc9999bbbb0000", Timestamp: now.Add(-time.Hour)},
 	}, 40)
 
-	// Eval 700 has 1 pending build (libreoffice), but emacs & git succeeded
+	// x86_64-linux: Eval 700 has 1 pending build (libreoffice), but emacs & git succeeded
 	st.SetPullStatus("aaaa1111bbbb2222cccc3333dddd4444eeee5555", "x86_64-linux", 1700, true)
 	st.UpsertChannelSystemEval("guix", 700, "aaaa1111bbbb2222cccc3333dddd4444eeee5555", "x86_64-linux", []cuirass.Job{
 		{BuildID: 1, Name: "emacs.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "29.4"},
@@ -34,7 +34,7 @@ func setupTestServer(t *testing.T) *Server {
 		{BuildID: 3, Name: "libreoffice.x86_64-linux", Status: cuirass.StatusScheduled, Version: "24.8"},
 	})
 
-	// Eval 699 has 0 pending builds
+	// x86_64-linux: Eval 699 has 0 pending builds
 	st.SetPullStatus("ffff6666eeee7777dddd8888cccc9999bbbb0000", "x86_64-linux", 1699, true)
 	st.UpsertChannelSystemEval("guix", 699, "ffff6666eeee7777dddd8888cccc9999bbbb0000", "x86_64-linux", []cuirass.Job{
 		{BuildID: 10, Name: "emacs.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "29.4"},
@@ -42,35 +42,69 @@ func setupTestServer(t *testing.T) *Server {
 		{BuildID: 12, Name: "libreoffice.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "24.8"},
 	})
 
+	// aarch64-linux: Eval 700 has 0 pending builds (already complete on aarch64; no guix/guix jobset exists on ci.guix.gnu.org for aarch64)
+	st.UpsertChannelSystemEval("guix", 700, "aaaa1111bbbb2222cccc3333dddd4444eeee5555", "aarch64-linux", []cuirass.Job{
+		{BuildID: 21, Name: "emacs.aarch64-linux", Status: cuirass.StatusSucceeded, Version: "29.4"},
+		{BuildID: 22, Name: "git.aarch64-linux", Status: cuirass.StatusSucceeded, Version: "2.46.0"},
+	})
+
+	// aarch64-linux: Eval 699 has 1 pending build
+	st.UpsertChannelSystemEval("guix", 699, "ffff6666eeee7777dddd8888cccc9999bbbb0000", "aarch64-linux", []cuirass.Job{
+		{BuildID: 30, Name: "emacs.aarch64-linux", Status: cuirass.StatusSucceeded, Version: "29.4"},
+		{BuildID: 31, Name: "git.aarch64-linux", Status: cuirass.StatusScheduled, Version: "2.46.0"},
+	})
+
 	_ = st.Save()
 	return NewServer(st, nil, nil)
 }
 
-func TestGetCommitWholeEvalAndPackageMode(t *testing.T) {
+func TestChannelsSCMWholeEvalAndPackageMode(t *testing.T) {
 	srv := setupTestServer(t)
 
-	// 1. Whole-evaluation mode (default max_pending=0) -> Eval 699
-	req := httptest.NewRequest(http.MethodGet, "/commit?system=x86_64-linux", nil)
+	// 1. Whole-evaluation mode on x86_64-linux (default max_pending=0) -> Eval 699
+	req := httptest.NewRequest(http.MethodGet, "/channels.scm?system=x86_64-linux", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if got := strings.TrimSpace(rec.Body.String()); got != "ffff6666eeee7777dddd8888cccc9999bbbb0000" {
-		t.Fatalf("got commit %q, want ffff6666...", got)
+	if !strings.Contains(rec.Body.String(), `(commit "ffff6666eeee7777dddd8888cccc9999bbbb0000")`) {
+		t.Fatalf("got body %q, want ffff6666...", rec.Body.String())
 	}
 
-	// 2. Package mode via GET ?pkgs=emacs,git -> Eval 700
-	req = httptest.NewRequest(http.MethodGet, "/commit?pkgs=emacs,git", nil)
+	// 2. Whole-evaluation mode on aarch64-linux -> Eval 700
+	req = httptest.NewRequest(http.MethodGet, "/channels.scm?system=aarch64-linux", nil)
 	rec = httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if got := strings.TrimSpace(rec.Body.String()); got != "aaaa1111bbbb2222cccc3333dddd4444eeee5555" {
-		t.Fatalf("got commit %q, want aaaa1111...", got)
+	if !strings.Contains(rec.Body.String(), ";; System:              aarch64-linux") ||
+		!strings.Contains(rec.Body.String(), ";; guix pull status:    Not built by ci.guix.gnu.org for aarch64-linux (guix/master substitutes ready)") ||
+		!strings.Contains(rec.Body.String(), `(commit "aaaa1111bbbb2222cccc3333dddd4444eeee5555")`) {
+		t.Fatalf("got body %q, want aarch64-linux and aaaa1111...", rec.Body.String())
+	}
+
+	// 3. Package mode via GET ?pkgs=emacs,git -> Eval 700
+	req = httptest.NewRequest(http.MethodGet, "/channels.scm?pkgs=emacs,git", nil)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `(commit "aaaa1111bbbb2222cccc3333dddd4444eeee5555")`) {
+		t.Fatalf("got body %q, want aaaa1111...", rec.Body.String())
+	}
+
+	// 4. Dropped /commit endpoint returns 404
+	req = httptest.NewRequest(http.MethodGet, "/commit", nil)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET /commit status = %d, want 404", rec.Code)
 	}
 }
 
@@ -148,6 +182,9 @@ func TestDashboardHTML(t *testing.T) {
 	body := rec.Body.String()
 	for _, want := range []string{
 		"Guix Pull with All Prebuilts Ready",
+		`id="arch-select"`,
+		`<option value="x86_64-linux" selected>x86_64-linux</option>`,
+		`<option value="aarch64-linux">aarch64-linux</option>`,
 		"About This Service",
 		"Usage",
 		"Recent Master Evaluations",
@@ -156,6 +193,7 @@ func TestDashboardHTML(t *testing.T) {
 		`class="local-time" data-utc="`,
 		"#700",
 		"#699",
+		"#1700",
 		`class="row-latest-ready"`,
 		`latest-guix-badge" style="margin-left:0.35rem;">Latest Ready</span>`,
 		`<pre class="mono">guix pull -C &lt;(curl -fsSL "http://example.com/channels.scm")</pre>`,
@@ -170,7 +208,7 @@ func TestDashboardHTML(t *testing.T) {
 		}
 	}
 
-	// Must NOT contain removed top commit block, status link, interactive resolver, poll badges, or arch switcher
+	// Must NOT contain removed top commit block, status link, interactive resolver, or poll badges
 	for _, unwanted := range []string{
 		"Latest Commit with All Prebuilts Ready on Substitutes",
 		`<a href="/status">Status</a>`,
@@ -179,13 +217,36 @@ func TestDashboardHTML(t *testing.T) {
 		"Evaluations:",
 		"Poller Idle",
 		"Syncing Cuirass",
-		"arch-bar",
-		"aarch64-linux",
 		`/healthz" class="btn mono"`,
 		`/evaluations?system=`,
 	} {
 		if strings.Contains(body, unwanted) {
 			t.Fatalf("HTML overview should not contain %q", unwanted)
+		}
+	}
+
+	// Verify GET /?system=aarch64-linux selects aarch64-linux in the dropdown, shows aarch64 evaluations (#2700),
+	// and updates the /channels.scm CLI commands with ?system=aarch64-linux
+	req = httptest.NewRequest(http.MethodGet, "/?system=aarch64-linux", nil)
+	req.Header.Set("Accept", "text/html")
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /?system=aarch64-linux status = %d, want 200", rec.Code)
+	}
+	aarchBody := rec.Body.String()
+	for _, want := range []string{
+		`<a href="/?system=aarch64-linux">Guix Pull with All Prebuilts Ready</a>`,
+		`<option value="x86_64-linux">x86_64-linux</option>`,
+		`<option value="aarch64-linux" selected>aarch64-linux</option>`,
+		`<span class="badge badge-muted" title="ci.guix.gnu.org does not build the guix jobset for aarch64-linux">Not built</span>`,
+		`<pre class="mono">guix pull -C &lt;(curl -fsSL "http://example.com/channels.scm?system=aarch64-linux")</pre>`,
+		`data-copy="guix pull -C &lt;(curl -fsSL &quot;http://example.com/channels.scm?system=aarch64-linux&quot;)" onclick="copyFromBtn(this)"`,
+		`<pre class="mono">(downloaded-channels "http://example.com/channels.scm?system=aarch64-linux")</pre>`,
+		`<pre class="mono">guix pull -C &lt;(curl -fsSL "http://example.com/channels.scm?system=aarch64-linux&amp;additional_channels=nonguix")</pre>`,
+	} {
+		if !strings.Contains(aarchBody, want) {
+			t.Fatalf("GET /?system=aarch64-linux missing %q", want)
 		}
 	}
 }
@@ -255,25 +316,25 @@ func TestRequirePullAlwaysEnforced(t *testing.T) {
 	srv := NewServer(st, nil, nil)
 
 	// 1. Whole-eval mode: Eval 801 is skipped because pull is not ready, and Eval 800 is selected
-	req := httptest.NewRequest(http.MethodGet, "/commit", nil)
+	req := httptest.NewRequest(http.MethodGet, "/channels.scm", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if got := strings.TrimSpace(rec.Body.String()); got != "7777111122223333444455556666777788889999" {
-		t.Fatalf("got commit %q, want eval 800 commit (77771111...)", got)
+	if !strings.Contains(rec.Body.String(), `(commit "7777111122223333444455556666777788889999")`) {
+		t.Fatalf("got body %q, want eval 800 commit (77771111...)", rec.Body.String())
 	}
 
 	// 2. Package mode: Eval 801 is also skipped because pull is not ready, and Eval 800 is selected
-	req = httptest.NewRequest(http.MethodGet, "/commit?pkgs=emacs", nil)
+	req = httptest.NewRequest(http.MethodGet, "/channels.scm?pkgs=emacs", nil)
 	rec = httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if got := strings.TrimSpace(rec.Body.String()); got != "7777111122223333444455556666777788889999" {
-		t.Fatalf("got commit %q, want eval 800 commit (77771111...)", got)
+	if !strings.Contains(rec.Body.String(), `(commit "7777111122223333444455556666777788889999")`) {
+		t.Fatalf("got body %q, want eval 800 commit (77771111...)", rec.Body.String())
 	}
 }
 
@@ -329,6 +390,7 @@ func TestAdditionalChannelsNonguixAPI(t *testing.T) {
 
 	st.UpsertChannelSystemEval("nonguix", 55, "ng55111122223333444455556666777788889999", "x86_64-linux", []cuirass.Job{
 		{BuildID: 901, Name: "linux.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "6.12.1"},
+		{BuildID: 1005984, Name: "firefox.x86_64-linux", Status: cuirass.StatusScheduled, Version: "133.0"},
 	})
 	st.UpsertChannelSystemEval("nonguix", 54, "ng54111122223333444455556666777788889999", "x86_64-linux", []cuirass.Job{
 		{BuildID: 902, Name: "linux.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "6.12.1"},
@@ -337,15 +399,16 @@ func TestAdditionalChannelsNonguixAPI(t *testing.T) {
 	_ = st.Save()
 	srv := NewServer(st, nil, nil)
 
-	// 1. GET /commit?additional_channels=nonguix (whole-eval mode -> picks Guix 699 + Nonguix 54)
-	req := httptest.NewRequest(http.MethodGet, "/commit?additional_channels=nonguix", nil)
+	// 1. GET /channels.scm?additional_channels=nonguix (whole-eval mode -> picks Guix 699 + Nonguix 54)
+	req := httptest.NewRequest(http.MethodGet, "/channels.scm?additional_channels=nonguix", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if got := strings.TrimSpace(rec.Body.String()); got != "ffff6666eeee7777dddd8888cccc9999bbbb0000" {
-		t.Fatalf("got commit %q, want ffff6666...", got)
+	if !strings.Contains(rec.Body.String(), `(commit "ffff6666eeee7777dddd8888cccc9999bbbb0000")`) ||
+		!strings.Contains(rec.Body.String(), `(commit "ng54111122223333444455556666777788889999")`) {
+		t.Fatalf("got body %q, want ffff6666... and ng541111...", rec.Body.String())
 	}
 
 	// 2. GET /channels.scm?additional_channels=nonguix&pkgs=emacs,linux (package mode -> picks Guix 700 + Nonguix 55)
@@ -403,13 +466,15 @@ func TestAdditionalChannelsNonguixAPI(t *testing.T) {
 		!strings.Contains(homeHTML, `<th class="col-nonguix"><a href="https://cuirass.nonguix.org/jobset/nonguix" target="_blank" rel="noopener">nonguix/nonguix</a></th>`) ||
 		!strings.Contains(homeHTML, `https://cuirass.nonguix.org/eval/55`) ||
 		!strings.Contains(homeHTML, `<strong>#55</strong>`) ||
+		!strings.Contains(homeHTML, `<span class="badge badge-warn" title="Pending jobs: firefox.x86_64-linux">Pending (1)</span>`) ||
+		!strings.Contains(homeHTML, `<a href="https://cuirass.nonguix.org/build/1005984/details" target="_blank" rel="noopener" class="mono" title="Pending build #1005984 (firefox.x86_64-linux)">firefox</a>`) ||
 		!strings.Contains(homeHTML, `class="row-latest-ready"`) ||
 		!strings.Contains(homeHTML, `latest-nonguix-badge" style="margin-left:0.35rem;">Latest Ready</span>`) {
-		t.Fatalf("home HTML with ?additional_channels=nonguix did not pre-select nonguix state, table column, latest ready row, or substitute setup link")
+		t.Fatalf("home HTML with ?additional_channels=nonguix did not pre-select nonguix state, table column, pending build link, latest ready row, or substitute setup link")
 	}
 
-	// 5. GET /commit?additional_channels=invalid -> 400 Bad Request
-	req = httptest.NewRequest(http.MethodGet, "/commit?additional_channels=invalid", nil)
+	// 5. GET /channels.scm?additional_channels=invalid -> 400 Bad Request
+	req = httptest.NewRequest(http.MethodGet, "/channels.scm?additional_channels=invalid", nil)
 	rec = httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {

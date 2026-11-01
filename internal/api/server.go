@@ -57,7 +57,6 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/", s.handleIndex)
 	s.mux.HandleFunc("/favicon.ico", s.handleFavicon)
 	s.mux.HandleFunc("/healthz", s.handleHealthz)
-	s.mux.HandleFunc("/commit", s.handleCommit)
 	s.mux.HandleFunc("/channels.scm", s.handleChannelsSCM)
 	s.mux.HandleFunc("/status", s.handleStatus)
 }
@@ -114,18 +113,6 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleCommit returns the resolved 40-character Git commit hash as plain text.
-func (s *Server) handleCommit(w http.ResponseWriter, r *http.Request) {
-	res, err := s.resolveRequest(r)
-	if err != nil {
-		s.writeResolveError(w, r, err, true)
-		return
-	}
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	_, _ = fmt.Fprintf(w, "%s\n", res.Commit)
-}
-
 // handleChannelsSCM returns a ready-to-use Guix channels.scm snippet with evaluation metadata comments.
 func (s *Server) handleChannelsSCM(w http.ResponseWriter, r *http.Request) {
 	res, err := s.resolveRequest(r)
@@ -161,7 +148,8 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 
 	snap := s.store.Snapshot()
 	baseURL := detectBaseURL(r)
-	st := buildDashboardState(baseURL, snap)
+	reqSystem := strings.TrimSpace(r.URL.Query().Get("system"))
+	st := buildDashboardState(baseURL, snap, reqSystem)
 	st.RequireNonguix = hasAdditionalChannel(r, "nonguix")
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

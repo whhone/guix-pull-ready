@@ -56,6 +56,12 @@ type PullEvalStatus struct {
 	Ready  bool
 }
 
+// PendingBuild records a sample pending job and its Cuirass build ID.
+type PendingBuild struct {
+	BuildID int64
+	JobName string
+}
+
 // SystemEvalData holds aggregated counts and indexed jobs for an (evaluation, system) pair.
 //
 // Memory layout optimization:
@@ -73,6 +79,7 @@ type SystemEvalData struct {
 	PendingJobs   int
 	FailedJobs    int
 	PendingSample []string
+	PendingBuilds []PendingBuild
 	PullReady     bool
 	PullEvalID    int64
 	Complete      bool
@@ -224,7 +231,11 @@ func (s *Store) loadFromDisk() error {
 
 	// Re-intern package and job name strings after gob decoding to deduplicate heap strings,
 	// and populate cached versions on multi-version jobs.
-	for _, data := range loaded.SystemData {
+	for k, data := range loaded.SystemData {
+		if !cuirass.SupportsGuixJobset(k.System) {
+			data.PullReady = true
+			data.PullEvalID = 0
+		}
 		if len(data.SingleJobs) > 0 {
 			internedSingle := make(map[string]int8, len(data.SingleJobs))
 			for pkg, st := range data.SingleJobs {
@@ -276,6 +287,13 @@ func (s *Store) loadFromDisk() error {
 	for i := range loaded.Evaluations {
 		if ct, ok := loaded.CommitTimes[loaded.Evaluations[i].Commit]; ok && !ct.IsZero() {
 			loaded.Evaluations[i].Timestamp = ct
+		}
+	}
+	for _, bySys := range loaded.PullByCommit {
+		for sys := range bySys {
+			if !cuirass.SupportsGuixJobset(sys) {
+				bySys[sys] = PullEvalStatus{EvalID: 0, Ready: true}
+			}
 		}
 	}
 
@@ -640,6 +658,7 @@ func (s *Store) UpsertChannelSystemEval(channel string, evalID int64, commit str
 	suffix := "." + system
 	var succeeded, pending, failed int
 	var pendingSample []string
+	var pendingBuilds []PendingBuild
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -667,7 +686,12 @@ func (s *Store) UpsertChannelSystemEval(channel string, evalID int64, commit str
 		case j.Status.IsPending():
 			pending++
 			if len(pendingSample) < 5 {
-				pendingSample = append(pendingSample, s.internLocked(j.Name))
+				ijName := s.internLocked(j.Name)
+				pendingSample = append(pendingSample, ijName)
+				pendingBuilds = append(pendingBuilds, PendingBuild{
+					BuildID: j.BuildID,
+					JobName: ijName,
+				})
 			}
 		case j.Status.IsFailed():
 			failed++
@@ -712,7 +736,9 @@ func (s *Store) UpsertChannelSystemEval(channel string, evalID int64, commit str
 	var pullReady bool
 	var pullEvalID int64
 	if isGuix {
-		if bySys, ok := s.state.PullByCommit[commit]; ok {
+		if !cuirass.SupportsGuixJobset(system) {
+			pullReady = true
+		} else if bySys, ok := s.state.PullByCommit[commit]; ok {
 			if st, ok := bySys[system]; ok {
 				pullReady = st.Ready
 				pullEvalID = st.EvalID
@@ -729,6 +755,7 @@ func (s *Store) UpsertChannelSystemEval(channel string, evalID int64, commit str
 		PendingJobs:   pending,
 		FailedJobs:    failed,
 		PendingSample: pendingSample,
+		PendingBuilds: pendingBuilds,
 		PullReady:     pullReady,
 		PullEvalID:    pullEvalID,
 		Complete:      total > 0 && pending == 0,

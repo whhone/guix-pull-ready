@@ -11,6 +11,7 @@ package resolver
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -79,8 +80,11 @@ type Result struct {
 	LastSyncedAt       time.Time       `json:"last_synced_at"`
 }
 
+// SupportedAdditionalChannels lists additional channels supported for coordinated resolution.
+var SupportedAdditionalChannels = []string{"nonguix"}
+
 // NormalizeAdditionalChannels parses, validates, and deduplicates additional channel names.
-// Currently "nonguix" is supported as an additional channel ("guix" is ignored because it is always included).
+// Currently SupportedAdditionalChannels ("nonguix") are supported ("guix" is ignored because it is always included).
 func NormalizeAdditionalChannels(raw []string) ([]string, error) {
 	seen := make(map[string]bool)
 	var out []string
@@ -92,8 +96,8 @@ func NormalizeAdditionalChannels(raw []string) ([]string, error) {
 			if ch == "" || ch == "guix" {
 				continue
 			}
-			if ch != "nonguix" {
-				return nil, fmt.Errorf("%w: %q (supported: nonguix)", ErrUnsupportedChannel, ch)
+			if !slices.Contains(SupportedAdditionalChannels, ch) {
+				return nil, fmt.Errorf("%w: %q (supported: %s)", ErrUnsupportedChannel, ch, strings.Join(SupportedAdditionalChannels, ", "))
 			}
 			if !seen[ch] {
 				seen[ch] = true
@@ -140,9 +144,10 @@ func Resolve(snap *store.Snapshot, q Query) (*Result, error) {
 }
 
 func resolveWholeEvalMode(snap *store.Snapshot, evals []store.EvaluationRecord, q Query) (*Result, error) {
+	requirePull := cuirass.SupportsGuixJobset(q.System)
 	for idx, ev := range evals {
 		data, ok := snap.ByEvalSystem[store.EvalSystemKey{EvalID: ev.ID, System: q.System}]
-		if !ok || data.TotalJobs == 0 || !data.PullReady {
+		if !ok || data.TotalJobs == 0 || (requirePull && !data.PullReady) {
 			continue
 		}
 		if data.PendingJobs <= q.MaxPending {
@@ -157,7 +162,7 @@ func resolveWholeEvalMode(snap *store.Snapshot, evals []store.EvaluationRecord, 
 				FailedCount:       data.FailedJobs,
 				SucceededCount:    data.SucceededJobs,
 				TotalCount:        data.TotalJobs,
-				PullReady:         data.PullReady,
+				PullReady:         data.PullReady || !requirePull,
 				PullEvaluationID:  data.PullEvalID,
 				UntrackedPackages: []string{},
 				ServerURL:         snap.ServerURL,
@@ -202,9 +207,10 @@ func resolvePackageMode(snap *store.Snapshot, evals []store.EvaluationRecord, q 
 		untrackedSpecs = []string{}
 	}
 
+	requirePull := cuirass.SupportsGuixJobset(q.System)
 	for idx, ev := range evals {
 		data, ok := snap.ByEvalSystem[store.EvalSystemKey{EvalID: ev.ID, System: q.System}]
-		if !ok || data.TotalJobs == 0 || !data.PullReady {
+		if !ok || data.TotalJobs == 0 || (requirePull && !data.PullReady) {
 			continue
 		}
 
@@ -239,7 +245,7 @@ func resolvePackageMode(snap *store.Snapshot, evals []store.EvaluationRecord, q 
 				FailedCount:       failedSpecs,
 				SucceededCount:    succeededSpecs,
 				TotalCount:        len(trackedSpecs),
-				PullReady:         data.PullReady,
+				PullReady:         data.PullReady || !requirePull,
 				PullEvaluationID:  data.PullEvalID,
 				TrackedPackages:   len(trackedSpecs),
 				UntrackedPackages: untrackedSpecs,
@@ -277,17 +283,27 @@ func resolveMultiChannelWholeEvalMode(snap *store.Snapshot, q Query, addChannels
 		ngServerURL = snap.ChannelServerURLs[primaryAddCh]
 	}
 
+	requirePull := cuirass.SupportsGuixJobset(q.System)
+	requireAddChJobs := cuirass.SupportsChannelJobset(primaryAddCh, q.System)
+
 	for ngIdx, ngEv := range ngEvals {
-		ngData, ok := snap.ByChannelEvalSystem[store.ChannelEvalSystemKey{
-			Channel: primaryAddCh,
-			EvalID:  ngEv.ID,
-			System:  q.System,
-		}]
-		if !ok || ngData == nil || ngData.TotalJobs == 0 {
-			continue
-		}
-		if ngData.PendingJobs > q.MaxPending {
-			continue
+		var ngPending, ngFailed, ngSucceeded, ngTotal int
+		if requireAddChJobs {
+			ngData, ok := snap.ByChannelEvalSystem[store.ChannelEvalSystemKey{
+				Channel: primaryAddCh,
+				EvalID:  ngEv.ID,
+				System:  q.System,
+			}]
+			if !ok || ngData == nil || ngData.TotalJobs == 0 {
+				continue
+			}
+			if ngData.PendingJobs > q.MaxPending {
+				continue
+			}
+			ngPending = ngData.PendingJobs
+			ngFailed = ngData.FailedJobs
+			ngSucceeded = ngData.SucceededJobs
+			ngTotal = ngData.TotalJobs
 		}
 
 		guixCommit := ngEv.Checkouts["guix"]
@@ -299,7 +315,7 @@ func resolveMultiChannelWholeEvalMode(snap *store.Snapshot, q Query, addChannels
 			continue
 		}
 		guixData, ok := snap.ByEvalSystem[store.EvalSystemKey{EvalID: guixEv.ID, System: q.System}]
-		if !ok || guixData == nil || guixData.TotalJobs == 0 || !guixData.PullReady {
+		if !ok || guixData == nil || guixData.TotalJobs == 0 || (requirePull && !guixData.PullReady) {
 			continue
 		}
 		if guixData.PendingJobs > q.MaxPending {
@@ -318,7 +334,7 @@ func resolveMultiChannelWholeEvalMode(snap *store.Snapshot, q Query, addChannels
 			FailedCount:       guixData.FailedJobs,
 			SucceededCount:    guixData.SucceededJobs,
 			TotalCount:        guixData.TotalJobs,
-			PullReady:         guixData.PullReady,
+			PullReady:         guixData.PullReady || !requirePull,
 			PullEvaluationID:  guixData.PullEvalID,
 			UntrackedPackages: []string{},
 			AdditionalChannels: []ChannelResult{
@@ -328,10 +344,10 @@ func resolveMultiChannelWholeEvalMode(snap *store.Snapshot, q Query, addChannels
 					EvaluationID:      ngEv.ID,
 					EvaluationDate:    ngEv.Timestamp,
 					EvaluationsBehind: ngIdx,
-					PendingCount:      ngData.PendingJobs,
-					FailedCount:       ngData.FailedJobs,
-					SucceededCount:    ngData.SucceededJobs,
-					TotalCount:        ngData.TotalJobs,
+					PendingCount:      ngPending,
+					FailedCount:       ngFailed,
+					SucceededCount:    ngSucceeded,
+					TotalCount:        ngTotal,
 					ServerURL:         ngServerURL,
 				},
 			},
@@ -386,17 +402,24 @@ func resolveMultiChannelPackageMode(snap *store.Snapshot, q Query, specs []strin
 		ngServerURL = snap.ChannelServerURLs[primaryAddCh]
 	}
 
+	requirePull := cuirass.SupportsGuixJobset(q.System)
+	requireAddChJobs := cuirass.SupportsChannelJobset(primaryAddCh, q.System)
+
 	for ngIdx, ngEv := range ngEvals {
-		ngData, ok := snap.ByChannelEvalSystem[store.ChannelEvalSystemKey{
-			Channel: primaryAddCh,
-			EvalID:  ngEv.ID,
-			System:  q.System,
-		}]
-		if !ok || ngData == nil || ngData.TotalJobs == 0 {
-			continue
-		}
-		if !hasNonguixSpec && ngData.PendingJobs > q.MaxPending {
-			continue
+		var ngData *store.SystemEvalData
+		if requireAddChJobs {
+			var ok bool
+			ngData, ok = snap.ByChannelEvalSystem[store.ChannelEvalSystemKey{
+				Channel: primaryAddCh,
+				EvalID:  ngEv.ID,
+				System:  q.System,
+			}]
+			if !ok || ngData == nil || ngData.TotalJobs == 0 {
+				continue
+			}
+			if !hasNonguixSpec && ngData.PendingJobs > q.MaxPending {
+				continue
+			}
 		}
 
 		guixCommit := ngEv.Checkouts["guix"]
@@ -408,7 +431,7 @@ func resolveMultiChannelPackageMode(snap *store.Snapshot, q Query, specs []strin
 			continue
 		}
 		guixData, ok := snap.ByEvalSystem[store.EvalSystemKey{EvalID: guixEv.ID, System: q.System}]
-		if !ok || guixData == nil || guixData.TotalJobs == 0 || !guixData.PullReady {
+		if !ok || guixData == nil || guixData.TotalJobs == 0 || (requirePull && !guixData.PullReady) {
 			continue
 		}
 
@@ -457,11 +480,13 @@ func resolveMultiChannelPackageMode(snap *store.Snapshot, q Query, specs []strin
 				EvaluationID:      ngEv.ID,
 				EvaluationDate:    ngEv.Timestamp,
 				EvaluationsBehind: ngIdx,
-				PendingCount:      ngData.PendingJobs,
-				FailedCount:       ngData.FailedJobs,
-				SucceededCount:    ngData.SucceededJobs,
-				TotalCount:        ngData.TotalJobs,
 				ServerURL:         ngServerURL,
+			}
+			if ngData != nil {
+				chRes.PendingCount = ngData.PendingJobs
+				chRes.FailedCount = ngData.FailedJobs
+				chRes.SucceededCount = ngData.SucceededJobs
+				chRes.TotalCount = ngData.TotalJobs
 			}
 			if ngTotalSpecs > 0 {
 				chRes.PendingCount = ngPendingSpecs
@@ -481,7 +506,7 @@ func resolveMultiChannelPackageMode(snap *store.Snapshot, q Query, specs []strin
 				FailedCount:        failedSpecs,
 				SucceededCount:     succeededSpecs,
 				TotalCount:         len(trackedSpecs),
-				PullReady:          guixData.PullReady,
+				PullReady:          guixData.PullReady || !requirePull,
 				PullEvaluationID:   guixData.PullEvalID,
 				TrackedPackages:    len(trackedSpecs),
 				UntrackedPackages:  untrackedSpecs,
@@ -642,7 +667,9 @@ func FormatChannelsSCM(r *Result) string {
 		lagStr = fmt.Sprintf("%d evaluations behind master", r.EvaluationsBehind)
 	}
 	pullStatus := "Building or pending in 'guix' jobset; expected local compile of Guix modules"
-	if r.PullReady {
+	if !cuirass.SupportsGuixJobset(r.System) {
+		pullStatus = fmt.Sprintf("Not built by ci.guix.gnu.org for %s (guix/master substitutes ready)", r.System)
+	} else if r.PullReady {
 		pullStatus = "Ready (prebuilt binary available for Guix itself)"
 	}
 

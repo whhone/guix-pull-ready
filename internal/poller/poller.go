@@ -270,8 +270,15 @@ func (p *Poller) syncEvaluations(ctx context.Context) error {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			pullEvID, hasPullEval := guixEvalByCommit[ev.Commit]
 			cachedPull, hasCachedPull := p.store.GetPullStatus(ev.Commit, sys)
+			if !cuirass.SupportsGuixJobset(sys) {
+				if !hasCachedPull || !cachedPull.Ready || cachedPull.EvalID != 0 {
+					p.store.SetPullStatus(ev.Commit, sys, 0, true)
+					pullStatusChanged = true
+				}
+				continue
+			}
+			pullEvID, hasPullEval := guixEvalByCommit[ev.Commit]
 			if !hasPullEval && hasCachedPull && cachedPull.EvalID > 0 {
 				pullEvID = cachedPull.EvalID
 				hasPullEval = true
@@ -446,6 +453,9 @@ func (p *Poller) syncAdditionalChannel(ctx context.Context, ch ChannelConfig, cy
 
 	var updatedCount int
 	for _, sys := range p.cfg.Systems {
+		if !cuirass.SupportsChannelJobset(ch.Name, sys) {
+			continue
+		}
 		var uncachedEvals []store.EvaluationRecord
 		var incompleteEvals []store.EvaluationRecord
 
