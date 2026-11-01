@@ -1,6 +1,7 @@
 package api
 
 import (
+	_ "embed"
 	"fmt"
 	"html"
 	"strings"
@@ -10,6 +11,12 @@ import (
 	"guix-pull-ready/internal/resolver"
 	"guix-pull-ready/internal/store"
 )
+
+//go:embed static/dashboard.css
+var dashboardCSS string
+
+//go:embed static/dashboard.js
+var dashboardJS string
 
 // channelEvalSummary holds the evaluation and pending build state for an additional channel
 // coordinated with a primary Guix commit.
@@ -248,267 +255,9 @@ func renderPageHead(title string) string {
 <title>` + html.EscapeString(title) + `</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.ico">
 <style>
-	:root {
-		color-scheme: light dark;
-		--bg: #ffffff;
-		--surface: #ffffff;
-		--border: #e2e8f0;
-		--text: #0f172a;
-		--muted: #475569;
-		--accent: #2563eb;
-		--ok-bg: #dcfce7;
-		--ok-text: #15803d;
-		--ok-bar: #22c55e;
-		--warn-bg: #fef9c3;
-		--warn-text: #a16207;
-		--code-bg: #f1f5f9;
-		--btn-hover: #e2e8f0;
-		--row-hover: #f8fafc;
-	}
-	@media (prefers-color-scheme: dark) {
-		:root {
-			--bg: #0f172a;
-			--surface: #1e293b;
-			--border: #334155;
-			--text: #f1f5f9;
-			--muted: #94a3b8;
-			--accent: #60a5fa;
-			--ok-bg: #064e3b;
-			--ok-text: #6ee7b7;
-			--ok-bar: #22c55e;
-			--warn-bg: #451a03;
-			--warn-text: #fcd34d;
-			--code-bg: #0b1120;
-			--btn-hover: #334155;
-			--row-hover: #172033;
-		}
-	}
-	* { box-sizing: border-box; }
-	body {
-		margin: 0 auto;
-		max-width: 1120px;
-		padding: 1.5rem 1rem 3rem;
-		font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-		background: var(--bg);
-		color: var(--text);
-		line-height: 1.5;
-	}
-	code, pre, .mono {
-		font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-	}
-	a { color: var(--accent); text-decoration: none; }
-	a:hover { text-decoration: underline; }
-
-	/* Site Header */
-	header.site-header-container {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		flex-wrap: wrap;
-		padding-bottom: 0.85rem;
-		border-bottom: 1px solid var(--border);
-		margin-bottom: 1.5rem;
-		width: 100%;
-	}
-	.site-header-element-left {
-		font-size: 1.25rem;
-		font-weight: 700;
-	}
-	.site-header-element-left a {
-		color: var(--text);
-		text-decoration: none;
-	}
-	.site-header-element-right {
-		display: flex;
-		align-items: center;
-		gap: 1rem;
-		flex-wrap: wrap;
-	}
-	select.arch-select {
-		padding: 0.3rem 0.6rem;
-		font-size: 0.85rem;
-		border-radius: 5px;
-		border: 1px solid var(--border);
-		background: var(--code-bg);
-		color: var(--text);
-		cursor: pointer;
-		font-weight: 500;
-	}
-	select.arch-select:hover {
-		background: var(--btn-hover);
-	}
-
-	/* Main Container */
-	main {
-		width: 100%;
-		display: flex;
-		flex-direction: column;
-		gap: 1.5rem;
-		min-width: 0;
-	}
-
-	/* Badges */
-	.badge {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.35rem;
-		padding: 0.2rem 0.55rem;
-		border-radius: 999px;
-		font-size: 0.78rem;
-		font-weight: 600;
-		white-space: nowrap;
-	}
-	.badge-ok { background: var(--ok-bg); color: var(--ok-text); }
-	.badge-warn { background: var(--warn-bg); color: var(--warn-text); }
-	.badge-muted { background: var(--code-bg); color: var(--muted); border: 1px solid var(--border); }
-
-	/* Panels */
-	.panel {
-		background: var(--surface);
-		border: 1px solid var(--border);
-		border-radius: 8px;
-		padding: 1.25rem;
-		box-shadow: 0 1px 2px rgba(0,0,0,0.03);
-		width: 100%;
-		min-width: 0;
-	}
-	.panel h2 { margin: 0 0 0.35rem; font-size: 1.1rem; }
-	.panel p.sub { margin: 0 0 1rem; color: var(--muted); font-size: 0.88rem; }
-	button, .btn {
-		padding: 0.32rem 0.65rem;
-		font-size: 0.8rem;
-		border-radius: 5px;
-		border: 1px solid var(--border);
-		background: var(--code-bg);
-		color: var(--text);
-		cursor: pointer;
-		font-weight: 500;
-		white-space: nowrap;
-	}
-	button:hover, .btn:hover { background: var(--btn-hover); }
-
-	/* Examples List (Code Block + Copy Button) */
-	.examples-list {
-		display: flex;
-		flex-direction: column;
-		gap: 0.85rem;
-		margin-top: 0.75rem;
-		width: 100%;
-		min-width: 0;
-	}
-	.example-item {
-		display: flex;
-		flex-direction: column;
-		gap: 0.3rem;
-		width: 100%;
-		min-width: 0;
-	}
-	.example-desc {
-		font-size: 0.85rem;
-		font-weight: 600;
-		color: var(--muted);
-	}
-	.code-box-row {
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-		background: var(--code-bg);
-		border: 1px solid var(--border);
-		border-radius: 6px;
-		padding: 0.4rem 0.6rem;
-		width: 100%;
-		min-width: 0;
-	}
-	.code-box-row pre {
-		margin: 0;
-		flex: 1;
-		min-width: 0;
-		overflow-x: auto;
-		font-size: 0.84rem;
-		background: transparent;
-		padding: 0.2rem 0;
-		border: none;
-		color: var(--text);
-	}
-	.code-box-row button {
-		flex-shrink: 0;
-		padding: 0.3rem 0.7rem;
-		font-size: 0.78rem;
-	}
-
-	/* Evaluations Table */
-	.table-wrap { overflow-x: auto; width: 100%; }
-	table { border-collapse: collapse; width: 100%; font-size: 0.88rem; }
-	th, td { border-bottom: 1px solid var(--border); padding: 0.65rem 0.75rem; text-align: left; vertical-align: middle; }
-	th { background: var(--code-bg); color: var(--muted); font-weight: 600; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.03em; }
-	tr:hover td { background: var(--row-hover); }
-	tr.row-latest-ready td { background: rgba(34, 197, 94, 0.08); }
-	tr.row-latest-ready:hover td { background: rgba(34, 197, 94, 0.14); }
-	tr.row-latest-ready td:first-child { box-shadow: inset 3px 0 0 var(--ok-bar); }
-	.local-time[data-utc]:not([data-formatted]) { visibility: hidden; }
-
-	/* Footer */
-	footer {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		flex-wrap: wrap;
-		gap: 0.5rem;
-		margin-top: 2.5rem;
-		padding-top: 1rem;
-		border-top: 1px solid var(--border);
-		font-size: 0.82rem;
-		color: var(--muted);
-		width: 100%;
-	}
-	.site-footer-element-left {
-		flex: 1;
-	}
-	.site-footer-element-right {
-		text-align: right;
-	}
-	@media (max-width: 500px) {
-		.site-footer-element-left,
-		.site-footer-element-right {
-			flex-basis: 100%;
-			text-align: left;
-		}
-	}
+` + dashboardCSS + `
 </style>
 <noscript><style>.local-time[data-utc] { visibility: visible !important; }</style></noscript>
-<script>
-function formatLocalTimes() {
-	const pad = (n) => String(n).padStart(2, "0");
-	let tzAbbr = "";
-	try {
-		const parts = new Intl.DateTimeFormat(undefined, { timeZoneName: "short" }).formatToParts(new Date());
-		const tzPart = parts.find((p) => p.type === "timeZoneName");
-		if (tzPart && tzPart.value) tzAbbr = " " + tzPart.value;
-	} catch (_) {}
-
-	document.querySelectorAll(".local-time[data-utc]:not([data-formatted])").forEach((el) => {
-		const raw = el.getAttribute("data-utc");
-		if (!raw) return;
-		const d = new Date(raw);
-		if (isNaN(d.getTime())) {
-			el.setAttribute("data-formatted", "1");
-			return;
-		}
-		const y = d.getFullYear();
-		const m = pad(d.getMonth() + 1);
-		const day = pad(d.getDate());
-		const hh = pad(d.getHours());
-		const mm = pad(d.getMinutes());
-		if (el.getAttribute("data-show-sec") === "1") {
-			const ss = pad(d.getSeconds());
-			el.textContent = y + "-" + m + "-" + day + " " + hh + ":" + mm + ":" + ss + tzAbbr;
-		} else {
-			el.textContent = y + "-" + m + "-" + day + " " + hh + ":" + mm;
-		}
-		el.setAttribute("data-formatted", "1");
-	});
-}
-</script>
 </head>
 <body>
 `
@@ -878,93 +627,7 @@ func renderFooter(st dashboardState) string {
 func renderCommonScripts() string {
 	return `
 <script>
-formatLocalTimes();
-
-function copyFromBtn(btn) {
-	const text = btn.getAttribute("data-copy");
-	if (text) {
-		copyText(text, btn);
-	}
-}
-
-function copyText(text, btn) {
-	const orig = btn.textContent;
-	const markCopied = () => {
-		btn.textContent = "Copied!";
-		setTimeout(() => { btn.textContent = orig; }, 1400);
-	};
-
-	if (navigator.clipboard && navigator.clipboard.writeText) {
-		navigator.clipboard.writeText(text).then(markCopied).catch(() => fallbackCopy(text, markCopied));
-	} else {
-		fallbackCopy(text, markCopied);
-	}
-}
-
-function fallbackCopy(text, onDone) {
-	const ta = document.createElement("textarea");
-	ta.value = text;
-	ta.style.position = "fixed";
-	ta.style.opacity = "0";
-	document.body.appendChild(ta);
-	ta.focus();
-	ta.select();
-	try {
-		if (document.execCommand("copy")) {
-			onDone();
-		}
-	} finally {
-		document.body.removeChild(ta);
-	}
-}
-
-function changeSystem(sys) {
-	const url = new URL(window.location.href);
-	if (sys && sys !== "x86_64-linux") {
-		url.searchParams.set("system", sys);
-	} else {
-		url.searchParams.delete("system");
-	}
-	window.location.href = url.pathname + url.search + url.hash;
-}
-
-function syncNonguixURLParam(checked) {
-	if (!window.history || !window.history.replaceState) return;
-	const url = new URL(window.location.href);
-	if (checked) {
-		url.searchParams.set("additional_channels", "nonguix");
-	} else {
-		url.searchParams.delete("additional_channels");
-	}
-	window.history.replaceState(null, "", url.pathname + url.search + url.hash);
-	const homeLink = document.querySelector(".site-header-element-left a");
-	if (homeLink) homeLink.setAttribute("href", "/" + url.search);
-}
-
-function toggleMainNonguix(checked) {
-	const cliGuix = document.getElementById("main-cli-guix");
-	const cliNg = document.getElementById("main-cli-nonguix");
-	if (cliGuix && cliNg) {
-		cliGuix.style.display = checked ? "none" : "flex";
-		cliNg.style.display = checked ? "flex" : "none";
-	}
-	document.querySelectorAll(".col-nonguix").forEach((el) => {
-		el.style.display = checked ? "" : "none";
-	});
-	document.querySelectorAll("tbody tr").forEach((tr) => {
-		const isLatest = checked
-			? tr.getAttribute("data-latest-nonguix") === "1"
-			: tr.getAttribute("data-latest-guix") === "1";
-		tr.classList.toggle("row-latest-ready", isLatest);
-	});
-	document.querySelectorAll(".latest-guix-badge").forEach((el) => {
-		el.style.display = checked ? "none" : "";
-	});
-	document.querySelectorAll(".latest-nonguix-badge").forEach((el) => {
-		el.style.display = checked ? "" : "none";
-	});
-	syncNonguixURLParam(checked);
-}
+` + dashboardJS + `
 </script>
 </body>
 </html>
