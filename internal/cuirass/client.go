@@ -20,7 +20,12 @@ import (
 )
 
 // DefaultSystems lists the target architectures tracked by default.
-var DefaultSystems = []string{"x86_64-linux", "aarch64-linux"}
+var DefaultSystems = []string{
+	"x86_64-linux",
+	"aarch64-linux",
+	"powerpc64le-linux",
+	"riscv64-linux",
+}
 
 // GuixJobsetSystems lists architectures built by the "guix" jobset on ci.guix.gnu.org.
 var GuixJobsetSystems = []string{"x86_64-linux", "i686-linux"}

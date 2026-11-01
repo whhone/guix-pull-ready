@@ -27,7 +27,7 @@ func main() {
 		dbPath              = flag.String("db-path", "./guix-pull-ready.db", "Path to persistent database file (use :memory: for in-memory only)")
 		cuirassURL          = flag.String("cuirass-url", "https://ci.guix.gnu.org", "Upstream Cuirass server URL")
 		nonguixURL          = flag.String("nonguix-url", "https://cuirass.nonguix.org", "Upstream Nonguix Cuirass server URL (pass \"\" to disable)")
-		systemsCSV          = flag.String("systems", "x86_64-linux,aarch64-linux", "Comma-separated target systems to track")
+		systemsCSV          = flag.String("systems", strings.Join(cuirass.DefaultSystems, ","), "Comma-separated target systems to track")
 		limit               = flag.Int("limit", 40, "Number of recent master evaluations to track")
 		pollInterval        = flag.Duration("poll-interval", 10*time.Minute, "Background Cuirass polling interval")
 		concurrency         = flag.Int("concurrency", 2, "Maximum concurrent HTTP requests to Cuirass")
@@ -41,7 +41,7 @@ func main() {
 
 	systems := parseSystems(*systemsCSV)
 	if len(systems) == 0 {
-		systems = []string{"x86_64-linux"}
+		systems = append([]string(nil), cuirass.DefaultSystems...)
 	}
 
 	st, err := store.Open(*dbPath, *cuirassURL, systems)

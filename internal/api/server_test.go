@@ -15,7 +15,7 @@ import (
 
 func setupTestServer(t *testing.T) *Server {
 	t.Helper()
-	st, err := store.Open(":memory:", "https://ci.guix.gnu.org", []string{"x86_64-linux", "aarch64-linux"})
+	st, err := store.Open(":memory:", "https://ci.guix.gnu.org", cuirass.DefaultSystems)
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
@@ -52,6 +52,16 @@ func setupTestServer(t *testing.T) *Server {
 	st.UpsertChannelSystemEval("guix", 699, "ffff6666eeee7777dddd8888cccc9999bbbb0000", "aarch64-linux", []cuirass.Job{
 		{BuildID: 30, Name: "emacs.aarch64-linux", Status: cuirass.StatusSucceeded, Version: "29.4"},
 		{BuildID: 31, Name: "git.aarch64-linux", Status: cuirass.StatusScheduled, Version: "2.46.0"},
+	})
+
+	// powerpc64le-linux: Eval 700 has 0 pending builds
+	st.UpsertChannelSystemEval("guix", 700, "aaaa1111bbbb2222cccc3333dddd4444eeee5555", "powerpc64le-linux", []cuirass.Job{
+		{BuildID: 41, Name: "emacs.powerpc64le-linux", Status: cuirass.StatusSucceeded, Version: "29.4"},
+	})
+
+	// riscv64-linux: Eval 699 has 0 pending builds
+	st.UpsertChannelSystemEval("guix", 699, "ffff6666eeee7777dddd8888cccc9999bbbb0000", "riscv64-linux", []cuirass.Job{
+		{BuildID: 51, Name: "emacs.riscv64-linux", Status: cuirass.StatusSucceeded, Version: "29.4"},
 	})
 
 	_ = st.Save()
@@ -185,6 +195,8 @@ func TestDashboardHTML(t *testing.T) {
 		`id="arch-select"`,
 		`<option value="x86_64-linux" selected>x86_64-linux</option>`,
 		`<option value="aarch64-linux">aarch64-linux</option>`,
+		`<option value="powerpc64le-linux">powerpc64le-linux</option>`,
+		`<option value="riscv64-linux">riscv64-linux</option>`,
 		"About This Service",
 		"Usage",
 		"Recent Master Evaluations",
@@ -247,6 +259,43 @@ func TestDashboardHTML(t *testing.T) {
 	} {
 		if !strings.Contains(aarchBody, want) {
 			t.Fatalf("GET /?system=aarch64-linux missing %q", want)
+		}
+	}
+
+	// Verify GET /?system=powerpc64le-linux and GET /?system=riscv64-linux show Not built for guix/guix and nonguix/nonguix
+	req = httptest.NewRequest(http.MethodGet, "/?system=powerpc64le-linux", nil)
+	req.Header.Set("Accept", "text/html")
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /?system=powerpc64le-linux status = %d, want 200", rec.Code)
+	}
+	ppcBody := rec.Body.String()
+	for _, want := range []string{
+		`<option value="powerpc64le-linux" selected>powerpc64le-linux</option>`,
+		`<span class="badge badge-muted" title="ci.guix.gnu.org does not build the guix jobset for powerpc64le-linux">Not built</span>`,
+		`<span class="badge badge-muted" title="cuirass.nonguix.org does not build substitutes for powerpc64le-linux">Not built</span>`,
+	} {
+		if !strings.Contains(ppcBody, want) {
+			t.Fatalf("GET /?system=powerpc64le-linux missing %q", want)
+		}
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/?system=riscv64-linux", nil)
+	req.Header.Set("Accept", "text/html")
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /?system=riscv64-linux status = %d, want 200", rec.Code)
+	}
+	riscvBody := rec.Body.String()
+	for _, want := range []string{
+		`<option value="riscv64-linux" selected>riscv64-linux</option>`,
+		`<span class="badge badge-muted" title="ci.guix.gnu.org does not build the guix jobset for riscv64-linux">Not built</span>`,
+		`<span class="badge badge-muted" title="cuirass.nonguix.org does not build substitutes for riscv64-linux">Not built</span>`,
+	} {
+		if !strings.Contains(riscvBody, want) {
+			t.Fatalf("GET /?system=riscv64-linux missing %q", want)
 		}
 	}
 }
