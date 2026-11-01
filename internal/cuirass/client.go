@@ -253,7 +253,7 @@ func NewClient(baseURL string, opts ...Option) *Client {
 		sem:        make(chan struct{}, 2),
 		maxRetries: 3,
 		retryDelay: 2 * time.Second,
-		userAgent:  "guix-sync-server/1.0 (Guile-Cuirass-Compatible)",
+		userAgent:  "guix-pull-ready/1.0 (Guile-Cuirass-Compatible)",
 	}
 	for _, opt := range opts {
 		opt(c)

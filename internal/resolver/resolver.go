@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"guix-evaluated/internal/cuirass"
-	"guix-evaluated/internal/store"
+	"guix-pull-ready/internal/cuirass"
+	"guix-pull-ready/internal/store"
 )
 
 var (

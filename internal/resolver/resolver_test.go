@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"guix-evaluated/internal/cuirass"
-	"guix-evaluated/internal/store"
+	"guix-pull-ready/internal/cuirass"
+	"guix-pull-ready/internal/store"
 )
 
 func buildTestStore(t *testing.T) *store.Store {

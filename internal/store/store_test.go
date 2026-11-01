@@ -5,11 +5,11 @@ import (
 	"testing"
 	"time"
 
-	"guix-evaluated/internal/cuirass"
+	"guix-pull-ready/internal/cuirass"
 )
 
 func TestStorePersistAndReload(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "guix-sync.db")
+	dbPath := filepath.Join(t.TempDir(), "guix-pull-ready.db")
 
 	st, err := Open(dbPath, "https://ci.guix.gnu.org", []string{"x86_64-linux"})
 	if err != nil {

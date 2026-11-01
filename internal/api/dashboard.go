@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"guix-evaluated/internal/resolver"
-	"guix-evaluated/internal/store"
+	"guix-pull-ready/internal/resolver"
+	"guix-pull-ready/internal/store"
 )
 
 type evaluationSummaryItem struct {

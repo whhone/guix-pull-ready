@@ -1,4 +1,4 @@
-// Command guix-sync-server runs an HTTP service that polls a GNU Guix Cuirass
+// Command guix-pull-ready runs an HTTP service that polls a GNU Guix Cuirass
 // continuous integration server in the background, caches evaluation and build
 // statuses locally, and serves ready Guix commits over a fast, lock-free HTTP API.
 package main
@@ -15,16 +15,16 @@ import (
 	"syscall"
 	"time"
 
-	"guix-evaluated/internal/api"
-	"guix-evaluated/internal/cuirass"
-	"guix-evaluated/internal/poller"
-	"guix-evaluated/internal/store"
+	"guix-pull-ready/internal/api"
+	"guix-pull-ready/internal/cuirass"
+	"guix-pull-ready/internal/poller"
+	"guix-pull-ready/internal/store"
 )
 
 func main() {
 	var (
 		listenAddr          = flag.String("listen", ":8080", "HTTP listen address")
-		dbPath              = flag.String("db-path", "./guix-sync.db", "Path to persistent database file (use :memory: for in-memory only)")
+		dbPath              = flag.String("db-path", "./guix-pull-ready.db", "Path to persistent database file (use :memory: for in-memory only)")
 		cuirassURL          = flag.String("cuirass-url", "https://ci.guix.gnu.org", "Upstream Cuirass server URL")
 		nonguixURL          = flag.String("nonguix-url", "https://cuirass.nonguix.org", "Upstream Nonguix Cuirass server URL (pass \"\" to disable)")
 		systemsCSV          = flag.String("systems", "x86_64-linux,aarch64-linux", "Comma-separated target systems to track")
@@ -101,7 +101,7 @@ func main() {
 	go bgPoller.Run(ctx)
 
 	go func() {
-		logger.Info("starting guix-sync-server HTTP API",
+		logger.Info("starting guix-pull-ready HTTP API",
 			"listen", *listenAddr,
 			"cuirass_url", *cuirassURL,
 			"systems", systems,
@@ -116,7 +116,7 @@ func main() {
 	}()
 
 	<-ctx.Done()
-	logger.Info("shutting down guix-sync-server...")
+	logger.Info("shutting down guix-pull-ready...")
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

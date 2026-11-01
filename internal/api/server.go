@@ -14,9 +14,9 @@ import (
 	"strings"
 	"time"
 
-	"guix-evaluated/internal/poller"
-	"guix-evaluated/internal/resolver"
-	"guix-evaluated/internal/store"
+	"guix-pull-ready/internal/poller"
+	"guix-pull-ready/internal/resolver"
+	"guix-pull-ready/internal/store"
 )
 
 // Server exposes the HTTP API for querying ready Guix commits.

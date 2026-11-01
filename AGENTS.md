@@ -2,11 +2,11 @@
 
 ## Project Overview
 
-`guix-evaluated` provides tools and a public HTTP service to find the newest GNU Guix commit whose substitutes (prebuilt binaries) are ready on `https://ci.guix.gnu.org` (Cuirass), allowing users to run `guix pull` or update `channels.scm` without triggering local source builds.
+`guix-pull-ready` provides tools and a public HTTP service to find the newest GNU Guix commit whose substitutes (prebuilt binaries) are ready on `https://ci.guix.gnu.org` (Cuirass), allowing users to run `guix pull` or update `channels.scm` without triggering local source builds.
 
 The repository contains two implementations:
 1. **`guix-sync-commit.scm`**: Standalone Guile Scheme CLI script (`guix repl -- guix-sync-commit.scm [OPTIONS] [SPEC...]`).
-2. **`guix-sync-server`**: Zero-dependency Go HTTP service that polls Cuirass in the background, caches evaluation and job states locally, and serves instant HTTP responses (`text/plain`, `channels.scm`, and `application/json`).
+2. **`guix-pull-ready`**: Zero-dependency Go HTTP service that polls Cuirass in the background, caches evaluation and job states locally, and serves instant HTTP responses (`text/plain`, `channels.scm`, and `application/json`).
 
 ---
 
@@ -14,7 +14,7 @@ The repository contains two implementations:
 
 ```text
 .
-├── cmd/guix-sync-server/main.go   # Go service entrypoint and CLI flags
+├── cmd/guix-pull-ready/main.go    # Go service entrypoint and CLI flags
 ├── internal/
 │   ├── api/                       # HTTP handlers (/commit, /channels.scm, /status, /healthz, /favicon.ico, /)
 │   ├── cuirass/                   # Cuirass REST client, JobStatus enum, nixname parsing, Guix VersionGreater
@@ -67,16 +67,16 @@ The repository contains two implementations:
 go test -v ./...
 
 # Build the static binary
-CGO_ENABLED=0 go build -trimpath -o guix-sync-server ./cmd/guix-sync-server
+CGO_ENABLED=0 go build -trimpath -o guix-pull-ready ./cmd/guix-pull-ready
 
 # Run directly in a single command (no build step needed)
-go run ./cmd/guix-sync-server
+go run ./cmd/guix-pull-ready
 
 # Run directly in-memory without writing to disk
-go run ./cmd/guix-sync-server --db-path=:memory:
+go run ./cmd/guix-pull-ready --db-path=:memory:
 
 # Run locally with custom options
-./guix-sync-server --listen=:8080 --db-path=./guix-sync.db --systems=x86_64-linux,aarch64-linux --limit=40
+./guix-pull-ready --listen=:8080 --db-path=./guix-pull-ready.db --systems=x86_64-linux,aarch64-linux --limit=40
 ```
 
 **Why `CGO_ENABLED=0` for static builds:**

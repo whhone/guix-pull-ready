@@ -1,15 +1,15 @@
 services:
-  guix-sync:
+  server:
     image: ghcr.io/whhone/guix-pull-ready:latest
     build:
       context: .
       dockerfile: Containerfile
     restart: unless-stopped
     volumes:
-      - guix-sync-data:/data
+      - data:/data
     command:
       - "--listen=:8080"
-      - "--db-path=/data/guix-sync.db"
+      - "--db-path=/data/guix-pull-ready.db"
       - "--systems=x86_64-linux,aarch64-linux"
       - "--poll-interval=10m"
 
@@ -20,7 +20,7 @@ services:
     environment:
       - TUNNEL_TOKEN=${TUNNEL_TOKEN}
     depends_on:
-      - guix-sync
+      - server
 
 volumes:
-  guix-sync-data:
+  data:

@@ -19,7 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"guix-evaluated/internal/cuirass"
+	"guix-pull-ready/internal/cuirass"
 )
 
 // EvalSystemKey uniquely identifies an evaluation for a target system architecture.

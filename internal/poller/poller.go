@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"guix-evaluated/internal/cuirass"
-	"guix-evaluated/internal/store"
+	"guix-pull-ready/internal/cuirass"
+	"guix-pull-ready/internal/store"
 )
 
 // ChannelConfig configures an additional channel Cuirass jobset (such as nonguix)
