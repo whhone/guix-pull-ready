@@ -58,7 +58,7 @@ func New(client *cuirass.Client, st *store.Store, cfg Config) *Poller {
 		cfg.Limit = 40
 	}
 	if cfg.PollInterval <= 0 {
-		cfg.PollInterval = 10 * time.Minute
+		cfg.PollInterval = 30 * time.Minute
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()

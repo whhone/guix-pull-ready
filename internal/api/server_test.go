@@ -300,6 +300,45 @@ func TestDashboardHTML(t *testing.T) {
 	}
 }
 
+func TestDashboardDropdownConsistentWithConfiguredSystems(t *testing.T) {
+	// Configure store with only x86_64-linux
+	st, err := store.Open(":memory:", "https://ci.guix.gnu.org", []string{"x86_64-linux"})
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	now := time.Date(2026, 10, 17, 14, 0, 0, 0, time.UTC)
+	st.UpdateChannelEvaluations("guix", []store.EvaluationRecord{
+		{ID: 700, Commit: "aaaa1111bbbb2222cccc3333dddd4444eeee5555", Timestamp: now},
+	}, 40)
+	st.SetPullStatus("aaaa1111bbbb2222cccc3333dddd4444eeee5555", "x86_64-linux", 1700, true)
+	st.UpsertChannelSystemEval("guix", 700, "aaaa1111bbbb2222cccc3333dddd4444eeee5555", "x86_64-linux", []cuirass.Job{
+		{BuildID: 1, Name: "emacs.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "29.4"},
+	})
+	_ = st.Save()
+
+	srv := NewServer(st, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET / status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `<option value="x86_64-linux" selected>x86_64-linux</option>`) {
+		t.Fatalf("expected x86_64-linux in dropdown")
+	}
+	for _, unwanted := range []string{
+		`<option value="aarch64-linux"`,
+		`<option value="powerpc64le-linux"`,
+		`<option value="riscv64-linux"`,
+	} {
+		if strings.Contains(body, unwanted) {
+			t.Fatalf("dropdown contains unwanted system option %q when --systems only tracks x86_64-linux", unwanted)
+		}
+	}
+}
+
 func TestStatusEndpointAlwaysReturnsJSON(t *testing.T) {
 	srv := setupTestServer(t)
 

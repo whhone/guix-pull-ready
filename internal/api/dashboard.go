@@ -66,19 +66,17 @@ func buildDashboardState(baseURL string, snap *store.Snapshot, reqSystem string)
 	if snap != nil {
 		st.ServerURL = snap.ServerURL
 		st.LastSyncedAt = snap.LastSyncedAt
-		seen := make(map[string]bool, len(snap.Systems)+len(defaultSystems))
 		var systems []string
-		for _, sys := range snap.Systems {
-			if sys != "" && !seen[sys] {
-				seen[sys] = true
-				systems = append(systems, sys)
+		if len(snap.Systems) > 0 {
+			seen := make(map[string]bool, len(snap.Systems))
+			for _, sys := range snap.Systems {
+				if sys != "" && !seen[sys] {
+					seen[sys] = true
+					systems = append(systems, sys)
+				}
 			}
-		}
-		for _, sys := range defaultSystems {
-			if !seen[sys] {
-				seen[sys] = true
-				systems = append(systems, sys)
-			}
+		} else {
+			systems = append([]string(nil), defaultSystems...)
 		}
 		st.Systems = systems
 
@@ -323,7 +321,8 @@ func renderPageHead(title string) string {
 	.site-header-element-right {
 		display: flex;
 		align-items: center;
-		gap: 0.5rem;
+		gap: 1rem;
+		flex-wrap: wrap;
 	}
 	select.arch-select {
 		padding: 0.3rem 0.6rem;
@@ -541,14 +540,20 @@ func renderPageHeader(st dashboardState) string {
 		fmt.Fprintf(&options, `<option value="%s"%s>%s</option>`, escSys, sel, escSys)
 	}
 
+	checkedAttr := ""
+	if st.RequireNonguix {
+		checkedAttr = " checked"
+	}
+
 	return fmt.Sprintf(`
 	<header class="site-header-container">
 		<strong class="site-header-element-left"><a href="/%s">Guix Pull with All Prebuilts Ready</a></strong>
 		<div class="site-header-element-right">
+			<label style="font-size:0.88rem;font-weight:500;color:var(--muted);cursor:pointer;display:inline-flex;align-items:center;gap:0.35rem;"><input type="checkbox" id="main-nonguix-toggle"%s onchange="toggleMainNonguix(this.checked)"> Require <code>nonguix</code> channel</label>
 			<select id="arch-select" class="arch-select mono" aria-label="Target architecture" onchange="changeSystem(this.value)">%s</select>
 		</div>
 	</header>
-`, querySuffix, options.String())
+`, querySuffix, checkedAttr, options.String())
 }
 
 func renderIntroBlock() string {
@@ -564,11 +569,9 @@ func renderIntroBlock() string {
 
 func renderCLIExamplesBlock(escBaseURL string, activeSystem string, requireNonguix bool) string {
 	var b strings.Builder
-	checkedAttr := ""
 	guixStyle := ""
 	ngStyle := ` style="display:none;"`
 	if requireNonguix {
-		checkedAttr = " checked"
 		guixStyle = ` style="display:none;"`
 		ngStyle = ""
 	}
@@ -576,10 +579,7 @@ func renderCLIExamplesBlock(escBaseURL string, activeSystem string, requireNongu
 	ngChannelsURL := escBaseURL + "/channels.scm" + html.EscapeString(buildQuerySuffix(activeSystem, true))
 
 	b.WriteString(`<div class="panel">`)
-	b.WriteString(`<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem;">`)
-	b.WriteString(`<h2 style="margin:0;">Usage</h2>`)
-	fmt.Fprintf(&b, `<label style="font-size:0.88rem;font-weight:500;color:var(--muted);cursor:pointer;display:inline-flex;align-items:center;gap:0.35rem;"><input type="checkbox" id="main-nonguix-toggle"%s onchange="toggleMainNonguix(this.checked)"> Require <code>nonguix</code> channel</label>`, checkedAttr)
-	b.WriteString(`</div>`)
+	b.WriteString(`<h2>Usage</h2>`)
 
 	fmt.Fprintf(&b, `
 		<div id="main-cli-guix" class="examples-list"%s>
