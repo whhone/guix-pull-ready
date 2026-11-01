@@ -17,12 +17,12 @@ func TestStorePersistAndReload(t *testing.T) {
 	}
 
 	ts := time.Date(2026, 10, 17, 10, 0, 0, 0, time.UTC)
-	st.UpdateEvaluations([]EvaluationRecord{
+	st.UpdateChannelEvaluations("guix", []EvaluationRecord{
 		{ID: 1001, Commit: "commit1001", Timestamp: ts},
 	}, 40)
 	st.SetPullStatus("commit1001", "x86_64-linux", 2001, true)
-	st.SetBuildNixNames(map[int64]string{555: "emacs-29.4"})
-	st.UpsertSystemEval(1001, "commit1001", "x86_64-linux", []cuirass.Job{
+	st.SetChannelBuildNixNames("guix", map[int64]string{555: "emacs-29.4"})
+	st.UpsertChannelSystemEval("guix", 1001, "commit1001", "x86_64-linux", []cuirass.Job{
 		{BuildID: 555, Name: "emacs.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "29.4"},
 	})
 
@@ -36,10 +36,10 @@ func TestStorePersistAndReload(t *testing.T) {
 		t.Fatalf("Open reload failed: %v", err)
 	}
 
-	if !st2.IsEvalSystemComplete(1001, "x86_64-linux") {
+	if !st2.IsChannelEvalSystemComplete("guix", 1001, "x86_64-linux") {
 		t.Fatalf("expected evaluation 1001 to be marked complete after reload")
 	}
-	if nix, ok := st2.GetBuildNixName(555); !ok || nix != "emacs-29.4" {
+	if nix, ok := st2.GetChannelBuildNixName("guix", 555); !ok || nix != "emacs-29.4" {
 		t.Fatalf("expected build 555 nixname emacs-29.4, got %q (ok=%v)", nix, ok)
 	}
 	snap := st2.Snapshot()
@@ -58,12 +58,12 @@ func TestStoreMultiChannelPersistAndRetention(t *testing.T) {
 	st.SetChannelServerURL("nonguix", "https://cuirass.nonguix.org")
 
 	ts := time.Date(2026, 10, 17, 10, 0, 0, 0, time.UTC)
-	st.UpdateEvaluations([]EvaluationRecord{
+	st.UpdateChannelEvaluations("guix", []EvaluationRecord{
 		{ID: 1002, Commit: "guixcommit1002", Timestamp: ts},
 		{ID: 1001, Commit: "guixcommit1001", Timestamp: ts.Add(-time.Hour)},
 	}, 40)
 	st.SetPullStatus("guixcommit1001", "x86_64-linux", 2001, true)
-	st.UpsertSystemEval(1001, "guixcommit1001", "x86_64-linux", []cuirass.Job{
+	st.UpsertChannelSystemEval("guix", 1001, "guixcommit1001", "x86_64-linux", []cuirass.Job{
 		{BuildID: 555, Name: "emacs.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "29.4"},
 	})
 
@@ -88,7 +88,7 @@ func TestStoreMultiChannelPersistAndRetention(t *testing.T) {
 
 	// Update Guix evaluations with maxRetained=1 and only eval 1003; eval 1001 must still be retained
 	// because nonguix eval 50 references guixcommit1001!
-	st.UpdateEvaluations([]EvaluationRecord{
+	st.UpdateChannelEvaluations("guix", []EvaluationRecord{
 		{ID: 1003, Commit: "guixcommit1003", Timestamp: ts.Add(time.Hour)},
 	}, 1)
 

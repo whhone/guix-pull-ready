@@ -23,18 +23,18 @@ func buildTestStore(t *testing.T) *store.Store {
 		{ID: 299, Commit: "commit299middle00000000000000000000000000", Timestamp: now.Add(-1 * time.Hour)},
 		{ID: 298, Commit: "commit298oldest00000000000000000000000000", Timestamp: now.Add(-2 * time.Hour)},
 	}
-	st.UpdateEvaluations(evals, 40)
+	st.UpdateChannelEvaluations("guix", evals, 40)
 
 	// Eval 301: 0 pending jobs, all succeeded, but pullReady = false (must always be skipped)
 	st.SetPullStatus(evals[0].Commit, "x86_64-linux", 1301, false)
-	st.UpsertSystemEval(301, evals[0].Commit, "x86_64-linux", []cuirass.Job{
+	st.UpsertChannelSystemEval("guix", 301, evals[0].Commit, "x86_64-linux", []cuirass.Job{
 		{BuildID: 101, Name: "emacs.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "29.4"},
 		{BuildID: 102, Name: "git.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "2.46.0"},
 	})
 
 	// Eval 300: 2 pending jobs, emacs succeeded, gcc-toolchain@14 pending, gcc-toolchain@13 succeeded, pull ready
 	st.SetPullStatus(evals[1].Commit, "x86_64-linux", 1300, true)
-	st.UpsertSystemEval(300, evals[1].Commit, "x86_64-linux", []cuirass.Job{
+	st.UpsertChannelSystemEval("guix", 300, evals[1].Commit, "x86_64-linux", []cuirass.Job{
 		{BuildID: 1, Name: "emacs.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "29.4"},
 		{BuildID: 2, Name: "git.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "2.46.0"},
 		{BuildID: 3, Name: "gcc-toolchain.x86_64-linux", Status: cuirass.StatusStarted, Version: "14.2.0"},
@@ -44,7 +44,7 @@ func buildTestStore(t *testing.T) *store.Store {
 
 	// Eval 299: 0 pending jobs, git failed, gcc-toolchain@14 succeeded, pull ready
 	st.SetPullStatus(evals[2].Commit, "x86_64-linux", 1299, true)
-	st.UpsertSystemEval(299, evals[2].Commit, "x86_64-linux", []cuirass.Job{
+	st.UpsertChannelSystemEval("guix", 299, evals[2].Commit, "x86_64-linux", []cuirass.Job{
 		{BuildID: 11, Name: "emacs.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "29.4"},
 		{BuildID: 12, Name: "git.x86_64-linux", Status: cuirass.StatusFailed, Version: "2.46.0"},
 		{BuildID: 13, Name: "gcc-toolchain.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "14.2.0"},
@@ -53,7 +53,7 @@ func buildTestStore(t *testing.T) *store.Store {
 
 	// Eval 298: 0 pending jobs, all succeeded, pull ready
 	st.SetPullStatus(evals[3].Commit, "x86_64-linux", 1298, true)
-	st.UpsertSystemEval(298, evals[3].Commit, "x86_64-linux", []cuirass.Job{
+	st.UpsertChannelSystemEval("guix", 298, evals[3].Commit, "x86_64-linux", []cuirass.Job{
 		{BuildID: 21, Name: "emacs.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "29.4"},
 		{BuildID: 22, Name: "git.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "2.46.0"},
 		{BuildID: 23, Name: "gcc-toolchain.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "14.2.0"},

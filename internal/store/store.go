@@ -345,11 +345,6 @@ func (s *Store) Snapshot() *Snapshot {
 	return s.snapshot.Load()
 }
 
-// GetBuildNixName looks up a cached build ID -> nixname entry for the primary "guix" channel.
-func (s *Store) GetBuildNixName(buildID int64) (string, bool) {
-	return s.GetChannelBuildNixName("guix", buildID)
-}
-
 // GetChannelBuildNixName looks up a cached build ID -> nixname entry for the given channel.
 func (s *Store) GetChannelBuildNixName(channel string, buildID int64) (string, bool) {
 	s.mu.RLock()
@@ -360,12 +355,6 @@ func (s *Store) GetChannelBuildNixName(channel string, buildID int64) (string, b
 	}
 	nix, ok := s.state.ChannelBuildNames[ChannelBuildKey{Channel: channel, BuildID: buildID}]
 	return nix, ok
-}
-
-// SetBuildNixNames caches build ID -> nixname mappings for the primary "guix" channel
-// and updates the derived Version field on any matching multi-version jobs in SystemData.
-func (s *Store) SetBuildNixNames(nixMap map[int64]string) {
-	s.SetChannelBuildNixNames("guix", nixMap)
 }
 
 // SetChannelBuildNixNames caches build ID -> nixname mappings for the specified channel
@@ -419,11 +408,6 @@ func (s *Store) SetChannelBuildNixNames(channel string, nixMap map[int64]string)
 	}
 }
 
-// HasEvalSystem reports whether the store has cached job data for (evalID, system) on the primary "guix" channel.
-func (s *Store) HasEvalSystem(evalID int64, system string) bool {
-	return s.HasChannelEvalSystem("guix", evalID, system)
-}
-
 // HasChannelEvalSystem reports whether the store has cached job data for (channel, evalID, system).
 func (s *Store) HasChannelEvalSystem(channel string, evalID int64, system string) bool {
 	s.mu.RLock()
@@ -434,12 +418,6 @@ func (s *Store) HasChannelEvalSystem(channel string, evalID int64, system string
 	}
 	data, ok := s.state.ChannelSystemData[ChannelEvalSystemKey{Channel: channel, EvalID: evalID, System: system}]
 	return ok && data.TotalJobs > 0
-}
-
-// IsEvalSystemComplete reports whether an (evalID, system) pair on the primary "guix" channel
-// is already cached with zero pending builds (and therefore never needs to be re-polled).
-func (s *Store) IsEvalSystemComplete(evalID int64, system string) bool {
-	return s.IsChannelEvalSystemComplete("guix", evalID, system)
 }
 
 // IsChannelEvalSystemComplete reports whether a (channel, evalID, system) tuple is already cached
@@ -529,11 +507,11 @@ func (s *Store) referencedGuixCommitsLocked() map[string]bool {
 	return refs
 }
 
-// UpdateEvaluations replaces the ordered list of recent master evaluations (sorted newest first)
+// updateGuixEvaluations replaces the ordered list of recent master evaluations (sorted newest first)
 // and prunes stale evaluation records beyond maxRetained to bound memory and disk usage.
 // Any Guix evaluation whose commit is still referenced by a retained additional channel
 // evaluation (such as nonguix) is preserved even if it has aged beyond maxRetained.
-func (s *Store) UpdateEvaluations(evals []EvaluationRecord, maxRetained int) {
+func (s *Store) updateGuixEvaluations(evals []EvaluationRecord, maxRetained int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -599,11 +577,11 @@ func (s *Store) UpdateEvaluations(evals []EvaluationRecord, maxRetained int) {
 	s.state.Evaluations = merged
 }
 
-// UpdateChannelEvaluations replaces the ordered list of evaluations for an additional channel
+// UpdateChannelEvaluations replaces the ordered list of evaluations for a channel
 // (sorted newest first) and prunes stale evaluation records beyond maxRetained.
 func (s *Store) UpdateChannelEvaluations(channel string, evals []EvaluationRecord, maxRetained int) {
 	if channel == "" || channel == "guix" {
-		s.UpdateEvaluations(evals, maxRetained)
+		s.updateGuixEvaluations(evals, maxRetained)
 		return
 	}
 
@@ -648,17 +626,12 @@ func (s *Store) UpdateChannelEvaluations(channel string, evals []EvaluationRecor
 	}
 }
 
-// UpsertSystemEval indexes and stores all jobs for a single (evalID, commit, system) on the primary "guix" channel.
+// UpsertChannelSystemEval indexes and stores all jobs for a single (channel, evalID, commit, system).
 //
 // Each job is first placed into singleJobs (1 byte per package). If a second job with the
 // same base package name is encountered in the same evaluation, the package is promoted
 // from singleJobs into multiJobs (JobsByBase) so version-specific queries can inspect all
 // candidate builds.
-func (s *Store) UpsertSystemEval(evalID int64, commit string, system string, jobs []cuirass.Job) {
-	s.UpsertChannelSystemEval("guix", evalID, commit, system, jobs)
-}
-
-// UpsertChannelSystemEval indexes and stores all jobs for a single (channel, evalID, commit, system).
 func (s *Store) UpsertChannelSystemEval(channel string, evalID int64, commit string, system string, jobs []cuirass.Job) {
 	if channel == "" {
 		channel = "guix"
@@ -791,9 +764,9 @@ func BasePackageFromJobName(jobName, system string) string {
 }
 
 // rebuildSnapshotLocked constructs a new immutable Snapshot and stores it atomically.
-// SingleJobs maps are never mutated in place (UpsertSystemEval allocates a fresh map on
+// SingleJobs maps are never mutated in place (UpsertChannelSystemEval allocates a fresh map on
 // replacement), so their map references can be shared directly with the Snapshot.
-// JobsByBase slices can have their Version fields updated in place by SetBuildNixNames,
+// JobsByBase slices can have their Version fields updated in place by SetChannelBuildNixNames,
 // so those ~200 multi-version package slices are deep-copied to keep the Snapshot race-free.
 // Caller must hold s.mu.Lock().
 func (s *Store) rebuildSnapshotLocked() {

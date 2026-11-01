@@ -6,50 +6,48 @@ import (
 	"strings"
 	"time"
 
-	"guix-evaluated/internal/poller"
 	"guix-evaluated/internal/resolver"
 	"guix-evaluated/internal/store"
 )
 
+type evaluationSummaryItem struct {
+	EvaluationID     int64
+	Commit           string
+	Timestamp        time.Time
+	PendingJobs      int
+	PullReady        bool
+	PullEvalID       int64
+	NonguixEvalID    int64
+	NonguixCommit    string
+	NonguixReady     bool
+	NonguixServerURL string
+}
+
 type systemOverview struct {
-	System               string                  `json:"system"`
-	StrictReady          *resolver.Result        `json:"strict_ready,omitempty"`
-	BestAvailable        *resolver.Result        `json:"best_available,omitempty"`
-	NonguixStrictReady   *resolver.Result        `json:"nonguix_strict_ready,omitempty"`
-	NonguixBestAvailable *resolver.Result        `json:"nonguix_best_available,omitempty"`
-	LatestEval           *evaluationSummaryItem  `json:"latest_eval,omitempty"`
-	Evaluations          []evaluationSummaryItem `json:"evaluations"`
+	System             string
+	StrictReady        *resolver.Result
+	NonguixStrictReady *resolver.Result
+	Evaluations        []evaluationSummaryItem
 }
 
 type dashboardState struct {
-	BaseURL        string                    `json:"base_url"`
-	ServerURL      string                    `json:"server_url"`
-	ActiveSystem   string                    `json:"active_system"`
-	RequireNonguix bool                      `json:"require_nonguix,omitempty"`
-	Systems        []string                  `json:"systems"`
-	Syncing        bool                      `json:"syncing"`
-	LastSyncedAt   time.Time                 `json:"last_synced_at"`
-	LastPollError  string                    `json:"last_poll_error,omitempty"`
-	TotalEvals     int                       `json:"total_evaluations"`
-	BySystem       map[string]systemOverview `json:"by_system"`
+	BaseURL        string
+	ServerURL      string
+	ActiveSystem   string
+	RequireNonguix bool
+	Systems        []string
+	LastSyncedAt   time.Time
+	BySystem       map[string]systemOverview
 }
 
 // buildDashboardState assembles the view state across all tracked architectures
-// for the HTML dashboard, HTML status page, plain-text summary, and JSON overview.
-func buildDashboardState(baseURL string, snap *store.Snapshot, p *poller.Poller) dashboardState {
+// for the HTML dashboard.
+func buildDashboardState(baseURL string, snap *store.Snapshot) dashboardState {
 	st := dashboardState{
 		BaseURL:      baseURL,
 		ServerURL:    "https://ci.guix.gnu.org",
 		ActiveSystem: "x86_64-linux",
 		BySystem:     make(map[string]systemOverview),
-	}
-
-	if p != nil {
-		syncing, _, lastErr := p.Status()
-		st.Syncing = syncing
-		if lastErr != nil {
-			st.LastPollError = lastErr.Error()
-		}
 	}
 
 	if snap == nil {
@@ -59,7 +57,6 @@ func buildDashboardState(baseURL string, snap *store.Snapshot, p *poller.Poller)
 	st.ServerURL = snap.ServerURL
 	st.Systems = append([]string(nil), snap.Systems...)
 	st.LastSyncedAt = snap.LastSyncedAt
-	st.TotalEvals = len(snap.Evaluations)
 
 	for _, sys := range snap.Systems {
 		st.BySystem[sys] = buildSystemOverview(snap, sys, 40)
@@ -72,9 +69,6 @@ func buildDashboardState(baseURL string, snap *store.Snapshot, p *poller.Poller)
 }
 
 // buildSystemOverview summarizes up to limit recent evaluations for a target architecture.
-// It computes both StrictReady (the newest evaluation with 0 pending builds) and
-// BestAvailable (the evaluation with the lowest pending build count, used as a fallback
-// when no evaluation in the window has reached 0 pending builds yet).
 func buildSystemOverview(snap *store.Snapshot, sys string, limit int) systemOverview {
 	ov := systemOverview{
 		System:      sys,
@@ -94,23 +88,14 @@ func buildSystemOverview(snap *store.Snapshot, sys string, limit int) systemOver
 		AdditionalChannels: []string{"nonguix"},
 	}); err == nil {
 		ov.NonguixStrictReady = ngStrict
-	} else if ngBest, err := resolver.Resolve(snap, resolver.Query{
-		System:             sys,
-		MaxPending:         100000,
-		Limit:              limit,
-		AdditionalChannels: []string{"nonguix"},
-	}); err == nil {
-		ov.NonguixBestAvailable = ngBest
 	}
 
-	var bestIdx = -1
-	var minPending = -1
 	ngServerURL := snap.ChannelServerURLs["nonguix"]
 	if ngServerURL == "" {
 		ngServerURL = "https://cuirass.nonguix.org"
 	}
 
-	for idx, ev := range snap.Evaluations {
+	for _, ev := range snap.Evaluations {
 		if len(ov.Evaluations) >= limit {
 			break
 		}
@@ -120,18 +105,12 @@ func buildSystemOverview(snap *store.Snapshot, sys string, limit int) systemOver
 		}
 
 		item := evaluationSummaryItem{
-			EvaluationID:  ev.ID,
-			Commit:        ev.Commit,
-			Timestamp:     ev.Timestamp,
-			System:        sys,
-			TotalJobs:     data.TotalJobs,
-			SucceededJobs: data.SucceededJobs,
-			PendingJobs:   data.PendingJobs,
-			FailedJobs:    data.FailedJobs,
-			PendingSample: data.PendingSample,
-			PullReady:     data.PullReady,
-			PullEvalID:    data.PullEvalID,
-			Complete:      data.Complete,
+			EvaluationID: ev.ID,
+			Commit:       ev.Commit,
+			Timestamp:    ev.Timestamp,
+			PendingJobs:  data.PendingJobs,
+			PullReady:    data.PullReady,
+			PullEvalID:   data.PullEvalID,
 		}
 		for _, ngEv := range snap.ChannelEvaluations["nonguix"] {
 			if ngEv.Checkouts["guix"] != ev.Commit {
@@ -149,10 +128,6 @@ func buildSystemOverview(snap *store.Snapshot, sys string, limit int) systemOver
 				item.NonguixEvalID = ngEv.ID
 				item.NonguixCommit = ngEv.Commit
 				item.NonguixReady = ngData.PendingJobs == 0
-				item.NonguixTotalJobs = ngData.TotalJobs
-				item.NonguixSucceededJobs = ngData.SucceededJobs
-				item.NonguixPendingJobs = ngData.PendingJobs
-				item.NonguixFailedJobs = ngData.FailedJobs
 				item.NonguixServerURL = ngServerURL
 			}
 			if item.NonguixReady {
@@ -160,88 +135,9 @@ func buildSystemOverview(snap *store.Snapshot, sys string, limit int) systemOver
 			}
 		}
 		ov.Evaluations = append(ov.Evaluations, item)
-		if ov.LatestEval == nil {
-			firstCopy := item
-			ov.LatestEval = &firstCopy
-		}
-
-		if minPending == -1 || data.PendingJobs < minPending {
-			minPending = data.PendingJobs
-			bestIdx = idx
-		}
-	}
-
-	if bestIdx >= 0 {
-		ev := snap.Evaluations[bestIdx]
-		data := snap.ByEvalSystem[store.EvalSystemKey{EvalID: ev.ID, System: sys}]
-		ov.BestAvailable = &resolver.Result{
-			Commit:            ev.Commit,
-			EvaluationID:      ev.ID,
-			EvaluationDate:    ev.Timestamp,
-			EvaluationsBehind: bestIdx,
-			System:            sys,
-			Mode:              resolver.ModeWholeEvaluation,
-			PendingCount:      data.PendingJobs,
-			FailedCount:       data.FailedJobs,
-			SucceededCount:    data.SucceededJobs,
-			TotalCount:        data.TotalJobs,
-			PullReady:         data.PullReady,
-			PullEvaluationID:  data.PullEvalID,
-			UntrackedPackages: []string{},
-			ServerURL:         snap.ServerURL,
-			LastSyncedAt:      snap.LastSyncedAt,
-		}
 	}
 
 	return ov
-}
-
-// renderPlainIndex renders a concise plain-text overview for CLI users (e.g. `curl http://localhost:8080/`).
-func renderPlainIndex(st dashboardState) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "guix-pull-ready service\n")
-	fmt.Fprintf(&b, "========================\n\n")
-
-	hasAnyEval := false
-	for _, sys := range st.Systems {
-		if ov, ok := st.BySystem[sys]; ok && len(ov.Evaluations) > 0 {
-			hasAnyEval = true
-			break
-		}
-	}
-
-	if !hasAnyEval {
-		fmt.Fprintf(&b, "Status: Warming up cache from Cuirass (%s)...\n\n", st.ServerURL)
-	} else {
-		fmt.Fprintf(&b, "Architecture Summary:\n")
-		for _, sys := range st.Systems {
-			ov := st.BySystem[sys]
-			if ov.StrictReady != nil {
-				r := ov.StrictReady
-				fmt.Fprintf(&b, "  %-16s %s  (eval %d, 0 pending, %d behind master, pull_ready=%v)\n",
-					sys+":", r.Commit, r.EvaluationID, r.EvaluationsBehind, r.PullReady)
-			} else if ov.BestAvailable != nil {
-				r := ov.BestAvailable
-				fmt.Fprintf(&b, "  %-16s %s  (eval %d, %d pending [lowest], %d behind master, pull_ready=%v)\n",
-					sys+":", r.Commit, r.EvaluationID, r.PendingCount, r.EvaluationsBehind, r.PullReady)
-			} else {
-				fmt.Fprintf(&b, "  %-16s syncing...\n", sys+":")
-			}
-		}
-		if !st.LastSyncedAt.IsZero() {
-			fmt.Fprintf(&b, "\nLast synced: %s (syncing=%v)\n\n",
-				st.LastSyncedAt.UTC().Format("2006-01-02 15:04:05 UTC"), st.Syncing)
-		}
-	}
-
-	fmt.Fprintf(&b, "Usage Examples:\n")
-	fmt.Fprintf(&b, "  # 1. Pull latest ready commit for x86_64-linux:\n")
-	fmt.Fprintf(&b, "  guix pull -C <(curl -fsSL \"%s/channels.scm\")\n\n", st.BaseURL)
-	fmt.Fprintf(&b, "  # 2. Track automatically via ~/.config/guix/channels.scm:\n")
-	fmt.Fprintf(&b, "  (downloaded-channels \"%s/channels.scm\")\n\n", st.BaseURL)
-	fmt.Fprintf(&b, "  # 3. Inspect detailed JSON status:\n")
-	fmt.Fprintf(&b, "  curl -fsSL \"%s/status\"\n", st.BaseURL)
-	return b.String()
 }
 
 // renderHTMLDashboard renders the main landing page ("/") with a short service overview,
@@ -283,16 +179,11 @@ func renderPageHead(title string) string {
 		--text: #0f172a;
 		--muted: #475569;
 		--accent: #2563eb;
-		--accent-hover: #1d4ed8;
 		--ok-bg: #dcfce7;
 		--ok-text: #15803d;
 		--ok-bar: #22c55e;
 		--warn-bg: #fef9c3;
 		--warn-text: #a16207;
-		--warn-bar: #eab308;
-		--err-bg: #fee2e2;
-		--err-text: #b91c1c;
-		--err-bar: #ef4444;
 		--code-bg: #f1f5f9;
 		--btn-hover: #e2e8f0;
 		--row-hover: #f8fafc;
@@ -305,16 +196,11 @@ func renderPageHead(title string) string {
 			--text: #f1f5f9;
 			--muted: #94a3b8;
 			--accent: #60a5fa;
-			--accent-hover: #3b82f6;
 			--ok-bg: #064e3b;
 			--ok-text: #6ee7b7;
 			--ok-bar: #22c55e;
 			--warn-bg: #451a03;
 			--warn-text: #fcd34d;
-			--warn-bar: #eab308;
-			--err-bg: #450a0a;
-			--err-text: #fca5a5;
-			--err-bar: #ef4444;
 			--code-bg: #0b1120;
 			--btn-hover: #334155;
 			--row-hover: #172033;
@@ -355,35 +241,6 @@ func renderPageHead(title string) string {
 		color: var(--text);
 		text-decoration: none;
 	}
-	.site-header-element-right {
-		text-align: right;
-		font-size: 0.95rem;
-	}
-	.site-header-element-right a {
-		color: var(--muted);
-		text-decoration: none;
-		font-weight: 500;
-		padding: 0.15rem 0.4rem;
-	}
-	.site-header-element-right a:hover {
-		color: var(--accent);
-		text-decoration: underline;
-	}
-	.site-header-element-right a.active {
-		color: var(--text);
-		font-weight: 700;
-		text-decoration: none;
-	}
-	@media (max-width: 500px) {
-		.site-header-element-left,
-		.site-header-element-right {
-			flex-basis: 100%;
-			text-align: left;
-		}
-		.site-header-element-right {
-			margin-top: 0.4rem;
-		}
-	}
 
 	/* Main Container */
 	main {
@@ -407,17 +264,9 @@ func renderPageHead(title string) string {
 	}
 	.badge-ok { background: var(--ok-bg); color: var(--ok-text); }
 	.badge-warn { background: var(--warn-bg); color: var(--warn-text); }
-	.badge-err { background: var(--err-bg); color: var(--err-text); }
-	.badge-neutral { background: var(--code-bg); color: var(--muted); border: 1px solid var(--border); }
 
-	/* Cards & Panels */
-	.cards {
-		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-		gap: 1rem;
-		width: 100%;
-	}
-	.card, .panel {
+	/* Panels */
+	.panel {
 		background: var(--surface);
 		border: 1px solid var(--border);
 		border-radius: 8px;
@@ -426,30 +275,8 @@ func renderPageHead(title string) string {
 		width: 100%;
 		min-width: 0;
 	}
-	.card-title {
-		font-size: 0.82rem;
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-		color: var(--muted);
-		font-weight: 600;
-		margin: 0 0 0.5rem;
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-	}
-	.card-commit {
-		font-size: 1.05rem;
-		font-weight: 700;
-		margin: 0.25rem 0 0.5rem;
-		word-break: break-all;
-		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
-		gap: 0.5rem;
-		min-width: 0;
-	}
-	.card-meta { font-size: 0.85rem; color: var(--muted); margin-bottom: 0.5rem; }
-	.btn-row { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.5rem; }
+	.panel h2 { margin: 0 0 0.35rem; font-size: 1.1rem; }
+	.panel p.sub { margin: 0 0 1rem; color: var(--muted); font-size: 0.88rem; }
 	button, .btn {
 		padding: 0.32rem 0.65rem;
 		font-size: 0.8rem;
@@ -462,12 +289,6 @@ func renderPageHead(title string) string {
 		white-space: nowrap;
 	}
 	button:hover, .btn:hover { background: var(--btn-hover); }
-	button.primary {
-		background: var(--accent);
-		color: #ffffff;
-		border-color: var(--accent);
-	}
-	button.primary:hover { background: var(--accent-hover); }
 
 	/* Examples List (Code Block + Copy Button) */
 	.examples-list {
@@ -518,42 +339,6 @@ func renderPageHead(title string) string {
 		font-size: 0.78rem;
 	}
 
-	/* Interactive Resolver Panel */
-	.panel h2 { margin: 0 0 0.35rem; font-size: 1.1rem; }
-	.panel p.sub { margin: 0 0 1rem; color: var(--muted); font-size: 0.88rem; }
-	.form-grid {
-		display: grid;
-		grid-template-columns: 1fr auto auto;
-		gap: 0.75rem;
-		align-items: end;
-	}
-	@media (max-width: 760px) {
-		.form-grid { grid-template-columns: 1fr; }
-	}
-	.field label { display: block; font-size: 0.8rem; font-weight: 600; color: var(--muted); margin-bottom: 0.25rem; }
-	.field input[type="text"], .field input[type="number"] {
-		width: 100%;
-		padding: 0.48rem 0.65rem;
-		border: 1px solid var(--border);
-		border-radius: 6px;
-		font-size: 0.9rem;
-		font-family: inherit;
-		background: var(--code-bg);
-		color: var(--text);
-	}
-	.checkboxes { display: flex; flex-wrap: wrap; gap: 1rem; margin-top: 0.65rem; font-size: 0.86rem; color: var(--muted); }
-	.checkboxes label { display: inline-flex; align-items: center; gap: 0.35rem; cursor: pointer; }
-	#finder-result { margin-top: 1rem; display: none; }
-	pre.code-box {
-		background: var(--code-bg);
-		border: 1px solid var(--border);
-		border-radius: 6px;
-		padding: 0.75rem 0.9rem;
-		overflow-x: auto;
-		font-size: 0.83rem;
-		margin: 0.5rem 0 0;
-	}
-
 	/* Evaluations Table */
 	.table-wrap { overflow-x: auto; width: 100%; }
 	table { border-collapse: collapse; width: 100%; font-size: 0.88rem; }
@@ -563,32 +348,6 @@ func renderPageHead(title string) string {
 	tr.row-latest-ready td { background: rgba(34, 197, 94, 0.08); }
 	tr.row-latest-ready:hover td { background: rgba(34, 197, 94, 0.14); }
 	tr.row-latest-ready td:first-child { box-shadow: inset 3px 0 0 var(--ok-bar); }
-
-	/* Progress Bar */
-	.prog-cell { min-width: 210px; }
-	.prog-bar {
-		display: flex;
-		height: 8px;
-		width: 100%;
-		background: var(--code-bg);
-		border-radius: 999px;
-		overflow: hidden;
-		margin-bottom: 0.3rem;
-	}
-	.prog-ok { background: var(--ok-bar); }
-	.prog-warn { background: var(--warn-bar); }
-	.prog-err { background: var(--err-bar); }
-	.prog-legend { font-size: 0.76rem; color: var(--muted); display: flex; gap: 0.5rem; }
-
-	.pending-tags { display: flex; flex-wrap: wrap; gap: 0.25rem; max-width: 290px; }
-	.pkg-tag {
-		background: var(--code-bg);
-		border: 1px solid var(--border);
-		border-radius: 4px;
-		padding: 0.08rem 0.38rem;
-		font-size: 0.74rem;
-		color: var(--muted);
-	}
 	.local-time[data-utc]:not([data-formatted]) { visibility: hidden; }
 
 	/* Footer */

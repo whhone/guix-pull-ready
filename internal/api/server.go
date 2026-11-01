@@ -19,8 +19,6 @@ import (
 	"guix-evaluated/internal/store"
 )
 
-const maxRequestBodyBytes = 64 * 1024 // 64 KB cap for POST package manifests
-
 // Server exposes the HTTP API for querying ready Guix commits.
 type Server struct {
 	store  *store.Store
@@ -46,7 +44,7 @@ func NewServer(st *store.Store, p *poller.Poller, logger *slog.Logger) *Server {
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Accept")
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
@@ -62,7 +60,6 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/commit", s.handleCommit)
 	s.mux.HandleFunc("/channels.scm", s.handleChannelsSCM)
 	s.mux.HandleFunc("/status", s.handleStatus)
-	s.mux.HandleFunc("/evaluations", s.handleEvaluations)
 }
 
 //go:embed static/favicon.svg
@@ -151,80 +148,21 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, res)
 }
 
-type evaluationSummaryItem struct {
-	EvaluationID         int64     `json:"evaluation_id"`
-	Commit               string    `json:"commit"`
-	Timestamp            time.Time `json:"timestamp"`
-	System               string    `json:"system"`
-	TotalJobs            int       `json:"total_jobs"`
-	SucceededJobs        int       `json:"succeeded_jobs"`
-	PendingJobs          int       `json:"pending_jobs"`
-	FailedJobs           int       `json:"failed_jobs"`
-	PendingSample        []string  `json:"pending_sample,omitempty"`
-	PullReady            bool      `json:"pull_ready"`
-	PullEvalID           int64     `json:"pull_evaluation_id,omitempty"`
-	NonguixEvalID        int64     `json:"nonguix_evaluation_id,omitempty"`
-	NonguixCommit        string    `json:"nonguix_commit,omitempty"`
-	NonguixReady         bool      `json:"nonguix_ready,omitempty"`
-	NonguixTotalJobs     int       `json:"nonguix_total_jobs,omitempty"`
-	NonguixSucceededJobs int       `json:"nonguix_succeeded_jobs,omitempty"`
-	NonguixPendingJobs   int       `json:"nonguix_pending_jobs,omitempty"`
-	NonguixFailedJobs    int       `json:"nonguix_failed_jobs,omitempty"`
-	NonguixServerURL     string    `json:"nonguix_server_url,omitempty"`
-	Complete             bool      `json:"complete"`
-}
-
-// handleEvaluations returns the list of cached evaluations and their build counts for a target system.
-func (s *Server) handleEvaluations(w http.ResponseWriter, r *http.Request) {
-	snap := s.store.Snapshot()
-	if snap == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "store is warming up"})
-		return
-	}
-
-	sys := r.URL.Query().Get("system")
-	if sys == "" {
-		sys = defaultSystem(snap)
-	}
-	limit := parseIntParam(r.URL.Query().Get("limit"), 20, 1, 100)
-	ov := buildSystemOverview(snap, sys, limit)
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"system":         sys,
-		"last_synced_at": snap.LastSyncedAt,
-		"strict_ready":   ov.StrictReady,
-		"best_available": ov.BestAvailable,
-		"evaluations":    ov.Evaluations,
-	})
-}
-
-// handleIndex serves the root endpoint ("/") with content negotiation:
-//   - Accept: application/json -> JSON overview across all tracked systems.
-//   - curl / wget / Accept: text/plain -> concise plain-text CLI cheat sheet.
-//   - Browser visits -> HTML overview page with ready commit and copyable commands.
+// handleIndex serves the HTML overview page ("/") with the ready commit and copyable commands.
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
 		return
 	}
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
 
 	snap := s.store.Snapshot()
 	baseURL := detectBaseURL(r)
-	st := buildDashboardState(baseURL, snap, s.poller)
+	st := buildDashboardState(baseURL, snap)
 	st.RequireNonguix = hasAdditionalChannel(r, "nonguix")
-
-	accept := r.Header.Get("Accept")
-	ua := strings.ToLower(r.Header.Get("User-Agent"))
-	if strings.Contains(accept, "application/json") {
-		writeJSON(w, http.StatusOK, st)
-		return
-	}
-
-	if strings.HasPrefix(ua, "curl/") || strings.HasPrefix(ua, "wget/") || strings.Contains(accept, "text/plain") {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		_, _ = io.WriteString(w, renderPlainIndex(st))
-		return
-	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = io.WriteString(w, renderHTMLDashboard(st))
@@ -243,11 +181,10 @@ func hasAdditionalChannel(r *http.Request, target string) bool {
 	return false
 }
 
-// resolveRequest parses query parameters and optional POST body package specs,
-// triggers lazy version resolution if any multi-version packages are queried,
-// and runs the resolver against the latest in-memory Snapshot.
+// resolveRequest parses query parameters, triggers lazy version resolution if any
+// multi-version packages are queried, and runs the resolver against the latest in-memory Snapshot.
 func (s *Server) resolveRequest(r *http.Request) (*resolver.Result, error) {
-	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+	if r.Method != http.MethodGet {
 		return nil, fmt.Errorf("method %s not allowed", r.Method)
 	}
 
@@ -286,35 +223,12 @@ func (s *Server) resolveRequest(r *http.Request) (*resolver.Result, error) {
 	}
 	q.AdditionalChannels = addChannels
 
-	if r.Method == http.MethodPost && r.Body != nil {
-		bodyPkgs, err := parsePackagesFromBody(r)
-		if err != nil {
-			return nil, err
-		}
-		q.Packages = append(q.Packages, bodyPkgs...)
-	}
-
 	if len(q.Packages) > 0 && s.poller != nil {
 		s.poller.ResolveMissingVersions(r.Context(), q.System, q.Packages, addChannels...)
 		snap = s.store.Snapshot()
 	}
 
 	return resolver.Resolve(snap, q)
-}
-
-// parsePackagesFromBody reads a plain-text list of package specs (newline, space, or comma
-// separated, such as the output of `guix package --list-installed | cut -f1`) from the request body.
-func parsePackagesFromBody(r *http.Request) ([]string, error) {
-	defer r.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBodyBytes))
-	if err != nil {
-		return nil, fmt.Errorf("reading request body: %w", err)
-	}
-	trimmed := strings.TrimSpace(string(body))
-	if trimmed == "" {
-		return nil, nil
-	}
-	return []string{trimmed}, nil
 }
 
 // writeResolveError maps resolver domain errors to appropriate HTTP status codes:

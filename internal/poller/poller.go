@@ -40,14 +40,13 @@ type Poller struct {
 	store  *store.Store
 	cfg    Config
 
-	mu                    sync.RWMutex
-	lastPollErr           error
-	lastPollEnd           time.Time
-	syncing               bool
-	refreshedCycle        map[store.EvalSystemKey]uint64
-	channelRefreshedCycle map[store.ChannelEvalSystemKey]uint64
-	reconciledBuilds      map[store.ChannelBuildKey]cuirass.JobStatus
-	cycleCounter          uint64
+	mu               sync.RWMutex
+	lastPollErr      error
+	lastPollEnd      time.Time
+	syncing          bool
+	refreshedCycle   map[store.ChannelEvalSystemKey]uint64
+	reconciledBuilds map[store.ChannelBuildKey]cuirass.JobStatus
+	cycleCounter     uint64
 }
 
 // New creates a new background Poller.
@@ -72,12 +71,11 @@ func New(client *cuirass.Client, st *store.Store, cfg Config) *Poller {
 		}
 	}
 	return &Poller{
-		client:                client,
-		store:                 st,
-		cfg:                   cfg,
-		refreshedCycle:        make(map[store.EvalSystemKey]uint64),
-		channelRefreshedCycle: make(map[store.ChannelEvalSystemKey]uint64),
-		reconciledBuilds:      make(map[store.ChannelBuildKey]cuirass.JobStatus),
+		client:           client,
+		store:            st,
+		cfg:              cfg,
+		refreshedCycle:   make(map[store.ChannelEvalSystemKey]uint64),
+		reconciledBuilds: make(map[store.ChannelBuildKey]cuirass.JobStatus),
 	}
 }
 
@@ -204,7 +202,7 @@ func (p *Poller) syncEvaluations(ctx context.Context) error {
 			})
 		}
 	}
-	p.store.UpdateEvaluations(records, p.cfg.Limit*2)
+	p.store.UpdateChannelEvaluations("guix", records, p.cfg.Limit*2)
 	for i := range records {
 		commit := records[i].Commit
 		if commit == "" || commit == "unknown" {
@@ -229,14 +227,14 @@ func (p *Poller) syncEvaluations(ctx context.Context) error {
 
 	p.mu.Lock()
 	// Prune cycle tracking entries for evaluations that have aged out of the window.
-	activeKeys := make(map[store.EvalSystemKey]bool, len(records)*len(p.cfg.Systems))
+	activeKeys := make(map[store.ChannelEvalSystemKey]bool, len(records)*len(p.cfg.Systems))
 	for _, ev := range records {
 		for _, sys := range p.cfg.Systems {
-			activeKeys[store.EvalSystemKey{EvalID: ev.ID, System: sys}] = true
+			activeKeys[store.ChannelEvalSystemKey{Channel: "guix", EvalID: ev.ID, System: sys}] = true
 		}
 	}
 	for k := range p.refreshedCycle {
-		if !activeKeys[k] {
+		if k.Channel == "guix" && !activeKeys[k] {
 			delete(p.refreshedCycle, k)
 		}
 	}
@@ -296,10 +294,10 @@ func (p *Poller) syncEvaluations(ctx context.Context) error {
 		var incompleteEvals []store.EvaluationRecord
 
 		for _, ev := range records {
-			if p.store.IsEvalSystemComplete(ev.ID, sys) {
+			if p.store.IsChannelEvalSystemComplete("guix", ev.ID, sys) {
 				continue
 			}
-			if !p.store.HasEvalSystem(ev.ID, sys) {
+			if !p.store.HasChannelEvalSystem("guix", ev.ID, sys) {
 				uncachedEvals = append(uncachedEvals, ev)
 			} else {
 				incompleteEvals = append(incompleteEvals, ev)
@@ -321,8 +319,8 @@ func (p *Poller) syncEvaluations(ctx context.Context) error {
 			p.mu.RLock()
 			sortedIncomplete := append([]store.EvaluationRecord(nil), incompleteEvals...)
 			sort.Slice(sortedIncomplete, func(i, j int) bool {
-				keyI := store.EvalSystemKey{EvalID: sortedIncomplete[i].ID, System: sys}
-				keyJ := store.EvalSystemKey{EvalID: sortedIncomplete[j].ID, System: sys}
+				keyI := store.ChannelEvalSystemKey{Channel: "guix", EvalID: sortedIncomplete[i].ID, System: sys}
+				keyJ := store.ChannelEvalSystemKey{Channel: "guix", EvalID: sortedIncomplete[j].ID, System: sys}
 				cycleI := p.refreshedCycle[keyI]
 				cycleJ := p.refreshedCycle[keyJ]
 				if cycleI != cycleJ {
@@ -330,10 +328,10 @@ func (p *Poller) syncEvaluations(ctx context.Context) error {
 				}
 				var pendingI, pendingJ int
 				if snap != nil {
-					if dataI, ok := snap.ByEvalSystem[keyI]; ok {
+					if dataI, ok := snap.ByEvalSystem[store.EvalSystemKey{EvalID: sortedIncomplete[i].ID, System: sys}]; ok {
 						pendingI = dataI.PendingJobs
 					}
-					if dataJ, ok := snap.ByEvalSystem[keyJ]; ok {
+					if dataJ, ok := snap.ByEvalSystem[store.EvalSystemKey{EvalID: sortedIncomplete[j].ID, System: sys}]; ok {
 						pendingJ = dataJ.PendingJobs
 					}
 				}
@@ -366,10 +364,10 @@ func (p *Poller) syncEvaluations(ctx context.Context) error {
 			p.reconcilePendingJobs(ctx, p.client, "guix", sys, jobs)
 
 			p.mu.Lock()
-			p.refreshedCycle[store.EvalSystemKey{EvalID: ev.ID, System: sys}] = cycle
+			p.refreshedCycle[store.ChannelEvalSystemKey{Channel: "guix", EvalID: ev.ID, System: sys}] = cycle
 			p.mu.Unlock()
 
-			p.store.UpsertSystemEval(ev.ID, ev.Commit, sys, jobs)
+			p.store.UpsertChannelSystemEval("guix", ev.ID, ev.Commit, sys, jobs)
 			updatedCount++
 
 			// Publish incremental in-memory snapshot so HTTP clients can query immediately
@@ -439,9 +437,9 @@ func (p *Poller) syncAdditionalChannel(ctx context.Context, ch ChannelConfig, cy
 			activeKeys[store.ChannelEvalSystemKey{Channel: ch.Name, EvalID: ev.ID, System: sys}] = true
 		}
 	}
-	for k := range p.channelRefreshedCycle {
+	for k := range p.refreshedCycle {
 		if k.Channel == ch.Name && !activeKeys[k] {
-			delete(p.channelRefreshedCycle, k)
+			delete(p.refreshedCycle, k)
 		}
 	}
 	p.mu.Unlock()
@@ -472,8 +470,8 @@ func (p *Poller) syncAdditionalChannel(ctx context.Context, ch ChannelConfig, cy
 			sort.Slice(sortedIncomplete, func(i, j int) bool {
 				keyI := store.ChannelEvalSystemKey{Channel: ch.Name, EvalID: sortedIncomplete[i].ID, System: sys}
 				keyJ := store.ChannelEvalSystemKey{Channel: ch.Name, EvalID: sortedIncomplete[j].ID, System: sys}
-				cycleI := p.channelRefreshedCycle[keyI]
-				cycleJ := p.channelRefreshedCycle[keyJ]
+				cycleI := p.refreshedCycle[keyI]
+				cycleJ := p.refreshedCycle[keyJ]
 				if cycleI != cycleJ {
 					return cycleI < cycleJ
 				}
@@ -514,7 +512,7 @@ func (p *Poller) syncAdditionalChannel(ctx context.Context, ch ChannelConfig, cy
 			p.reconcilePendingJobs(ctx, ch.Client, ch.Name, sys, jobs)
 
 			p.mu.Lock()
-			p.channelRefreshedCycle[store.ChannelEvalSystemKey{Channel: ch.Name, EvalID: ev.ID, System: sys}] = cycle
+			p.refreshedCycle[store.ChannelEvalSystemKey{Channel: ch.Name, EvalID: ev.ID, System: sys}] = cycle
 			p.mu.Unlock()
 
 			p.store.UpsertChannelSystemEval(ch.Name, ev.ID, ev.Commit, sys, jobs)

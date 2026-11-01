@@ -224,7 +224,7 @@ func TestPollerFairRoundRobinRefresh(t *testing.T) {
 	}
 
 	// Eval 101 should now be marked complete in the store!
-	if !st.IsEvalSystemComplete(101, "x86_64-linux") {
+	if !st.IsChannelEvalSystemComplete("guix", 101, "x86_64-linux") {
 		t.Fatalf("expected eval 101 to be complete in store")
 	}
 
@@ -307,7 +307,7 @@ func TestPollerGuixPullReadyRefreshedForCompletedMasterEval(t *testing.T) {
 	if guixPullCalls.Load() != 1 {
 		t.Fatalf("expected 1 call to guix pull eval 1700, got %d", guixPullCalls.Load())
 	}
-	if !st.IsEvalSystemComplete(700, "x86_64-linux") {
+	if !st.IsChannelEvalSystemComplete("guix", 700, "x86_64-linux") {
 		t.Fatalf("expected master eval 700 to be marked complete")
 	}
 

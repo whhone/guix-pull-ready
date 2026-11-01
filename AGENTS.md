@@ -14,9 +14,9 @@ The repository contains two implementations:
 
 ```text
 .
-├── cmd/guix-sync-server/main.go   # Go service entrypoint, CLI flags, env vars
+├── cmd/guix-sync-server/main.go   # Go service entrypoint and CLI flags
 ├── internal/
-│   ├── api/                       # HTTP handlers (/commit, /channels.scm, /status, /evaluations, /healthz, /)
+│   ├── api/                       # HTTP handlers (/commit, /channels.scm, /status, /healthz, /favicon.ico, /)
 │   ├── cuirass/                   # Cuirass REST client, JobStatus enum, nixname parsing, Guix VersionGreater
 │   ├── poller/                    # Incremental background poller and lazy /build/<id> version resolver
 │   ├── resolver/                  # Whole-evaluation and package-list query resolution engine
@@ -96,7 +96,7 @@ guix repl -- guix-sync-commit.scm emacs git gcc-toolchain@14
 
 ## HTTP API Endpoints & Curl Examples
 
-The service listens on `:8080` by default. All endpoints support both GET query parameters and POST request bodies for passing package lists.
+The service listens on `:8080` by default. All endpoints accept `GET` requests with query parameters.
 
 ### Query Parameters
 
@@ -120,9 +120,6 @@ curl -fsSL "http://localhost:8080/commit"
 
 # Package mode: find commit where emacs, git, and gcc-toolchain 14 are ready
 curl -fsSL "http://localhost:8080/commit?pkgs=emacs,git,gcc-toolchain@14"
-
-# POST package list from installed packages (avoids URL length limits)
-guix package --list-installed | cut -f1 | curl -fsSL --data-binary @- "http://localhost:8080/commit"
 ```
 
 #### 2. Channel Specification (`GET /channels.scm`)
@@ -153,25 +150,15 @@ curl -fsSL "http://localhost:8080/status?system=x86_64-linux"
 curl -fsSL "http://localhost:8080/status?pkgs=emacs,git,my-custom-pkg"
 ```
 
-#### 4. Cached Evaluations List (`GET /evaluations`)
-Returns recent evaluations tracked in local cache with job counts and pending build samples.
-
-```bash
-# View last 10 evaluations for aarch64-linux
-curl -fsSL "http://localhost:8080/evaluations?system=aarch64-linux&limit=10"
-```
-
-#### 5. Health Check (`GET /healthz`)
+#### 4. Health Check (`GET /healthz`)
 Returns service and poller status for monitoring and container health checks.
 
 ```bash
 curl -fsSL "http://localhost:8080/healthz"
 ```
 
-#### 6. Service Overview & Usage (`GET /`)
-- `curl http://localhost:8080/` returns a concise plain-text cheat sheet.
-- Browser visits return an HTML dashboard table of ready commits and copyable commands.
-- `curl -H "Accept: application/json" http://localhost:8080/` returns a JSON overview across all tracked systems.
+#### 5. Service Overview & Usage (`GET /`)
+Returns an HTML dashboard table of recent evaluations, ready commits, and copyable CLI commands.
 
 ---
 

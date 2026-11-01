@@ -21,14 +21,14 @@ func setupTestServer(t *testing.T) *Server {
 	}
 
 	now := time.Date(2026, 10, 17, 14, 0, 0, 0, time.UTC)
-	st.UpdateEvaluations([]store.EvaluationRecord{
+	st.UpdateChannelEvaluations("guix", []store.EvaluationRecord{
 		{ID: 700, Commit: "aaaa1111bbbb2222cccc3333dddd4444eeee5555", Timestamp: now},
 		{ID: 699, Commit: "ffff6666eeee7777dddd8888cccc9999bbbb0000", Timestamp: now.Add(-time.Hour)},
 	}, 40)
 
 	// Eval 700 has 1 pending build (libreoffice), but emacs & git succeeded
 	st.SetPullStatus("aaaa1111bbbb2222cccc3333dddd4444eeee5555", "x86_64-linux", 1700, true)
-	st.UpsertSystemEval(700, "aaaa1111bbbb2222cccc3333dddd4444eeee5555", "x86_64-linux", []cuirass.Job{
+	st.UpsertChannelSystemEval("guix", 700, "aaaa1111bbbb2222cccc3333dddd4444eeee5555", "x86_64-linux", []cuirass.Job{
 		{BuildID: 1, Name: "emacs.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "29.4"},
 		{BuildID: 2, Name: "git.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "2.46.0"},
 		{BuildID: 3, Name: "libreoffice.x86_64-linux", Status: cuirass.StatusScheduled, Version: "24.8"},
@@ -36,7 +36,7 @@ func setupTestServer(t *testing.T) *Server {
 
 	// Eval 699 has 0 pending builds
 	st.SetPullStatus("ffff6666eeee7777dddd8888cccc9999bbbb0000", "x86_64-linux", 1699, true)
-	st.UpsertSystemEval(699, "ffff6666eeee7777dddd8888cccc9999bbbb0000", "x86_64-linux", []cuirass.Job{
+	st.UpsertChannelSystemEval("guix", 699, "ffff6666eeee7777dddd8888cccc9999bbbb0000", "x86_64-linux", []cuirass.Job{
 		{BuildID: 10, Name: "emacs.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "29.4"},
 		{BuildID: 11, Name: "git.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "2.46.0"},
 		{BuildID: 12, Name: "libreoffice.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "24.8"},
@@ -74,12 +74,11 @@ func TestGetCommitWholeEvalAndPackageMode(t *testing.T) {
 	}
 }
 
-func TestPostPackageManifestAndChannelsSCM(t *testing.T) {
+func TestChannelsSCM(t *testing.T) {
 	srv := setupTestServer(t)
 
-	// 1. POST newline-separated package list to /channels.scm -> returns channels.scm snippet
-	body := strings.NewReader("emacs\ngit\nmy-custom-pkg\n")
-	req := httptest.NewRequest(http.MethodPost, "/channels.scm", body)
+	// 1. GET /channels.scm?pkgs=emacs,git,my-custom-pkg -> returns channels.scm snippet
+	req := httptest.NewRequest(http.MethodGet, "/channels.scm?pkgs=emacs,git,my-custom-pkg", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -97,17 +96,13 @@ func TestPostPackageManifestAndChannelsSCM(t *testing.T) {
 		t.Fatalf("channels.scm missing channel introduction:\n%s", out)
 	}
 
-	// 2. GET /channels.scm?pkgs=emacs,git
-	req = httptest.NewRequest(http.MethodGet, "/channels.scm?pkgs=emacs,git", nil)
+	// 2. POST /channels.scm -> rejected with 400 Bad Request
+	req = httptest.NewRequest(http.MethodPost, "/channels.scm", strings.NewReader("emacs\ngit\n"))
 	rec = httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-	out = rec.Body.String()
-	if !strings.Contains(out, `(commit "aaaa1111bbbb2222cccc3333dddd4444eeee5555")`) {
-		t.Fatalf("channels.scm missing expected commit:\n%s", out)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST status = %d, want 400", rec.Code)
 	}
 }
 
@@ -130,21 +125,6 @@ func TestStatusJSONAndHealthz(t *testing.T) {
 		t.Fatalf("unexpected status result: %+v", res)
 	}
 
-	// Evaluations endpoint
-	req = httptest.NewRequest(http.MethodGet, "/evaluations?system=x86_64-linux", nil)
-	rec = httptest.NewRecorder()
-	srv.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-	var evalData map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &evalData); err != nil {
-		t.Fatalf("evaluations json.Unmarshal: %v", err)
-	}
-	if evalData["system"] != "x86_64-linux" {
-		t.Fatalf("expected system x86_64-linux, got %v", evalData["system"])
-	}
-
 	// Healthz
 	req = httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec = httptest.NewRecorder()
@@ -154,10 +134,9 @@ func TestStatusJSONAndHealthz(t *testing.T) {
 	}
 }
 
-func TestDashboardHTMLAndPlainIndex(t *testing.T) {
+func TestDashboardHTML(t *testing.T) {
 	srv := setupTestServer(t)
 
-	// 1. Browser request (HTML Overview page)
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Accept", "text/html")
 	rec := httptest.NewRecorder()
@@ -209,23 +188,6 @@ func TestDashboardHTMLAndPlainIndex(t *testing.T) {
 			t.Fatalf("HTML overview should not contain %q", unwanted)
 		}
 	}
-
-	// 2. curl request (Plain-Text Summary)
-	req = httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("User-Agent", "curl/8.5.0")
-	rec = httptest.NewRecorder()
-	srv.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-	plain := rec.Body.String()
-	if !strings.Contains(plain, "ffff6666eeee7777dddd8888cccc9999bbbb0000") {
-		t.Fatalf("plain index missing ready commit:\n%s", plain)
-	}
-	if !strings.Contains(plain, "downloaded-channels") {
-		t.Fatalf("plain index missing downloaded-channels:\n%s", plain)
-	}
 }
 
 func TestStatusEndpointAlwaysReturnsJSON(t *testing.T) {
@@ -272,20 +234,20 @@ func TestRequirePullAlwaysEnforced(t *testing.T) {
 	}
 
 	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
-	st.UpdateEvaluations([]store.EvaluationRecord{
+	st.UpdateChannelEvaluations("guix", []store.EvaluationRecord{
 		{ID: 801, Commit: "8888111122223333444455556666777788889999", Timestamp: now},
 		{ID: 800, Commit: "7777111122223333444455556666777788889999", Timestamp: now.Add(-time.Hour)},
 	}, 40)
 
 	// Eval 801 has completed jobs, but pull is NOT ready (e.g. guix job pending/failed)
 	st.SetPullStatus("8888111122223333444455556666777788889999", "x86_64-linux", 1801, false)
-	st.UpsertSystemEval(801, "8888111122223333444455556666777788889999", "x86_64-linux", []cuirass.Job{
+	st.UpsertChannelSystemEval("guix", 801, "8888111122223333444455556666777788889999", "x86_64-linux", []cuirass.Job{
 		{BuildID: 101, Name: "emacs.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "29.4"},
 	})
 
 	// Eval 800 has completed jobs and pull IS ready
 	st.SetPullStatus("7777111122223333444455556666777788889999", "x86_64-linux", 1800, true)
-	st.UpsertSystemEval(800, "7777111122223333444455556666777788889999", "x86_64-linux", []cuirass.Job{
+	st.UpsertChannelSystemEval("guix", 800, "7777111122223333444455556666777788889999", "x86_64-linux", []cuirass.Job{
 		{BuildID: 100, Name: "emacs.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "29.4"},
 	})
 
@@ -323,21 +285,21 @@ func TestAdditionalChannelsNonguixAPI(t *testing.T) {
 	st.SetChannelServerURL("nonguix", "https://cuirass.nonguix.org")
 
 	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
-	st.UpdateEvaluations([]store.EvaluationRecord{
+	st.UpdateChannelEvaluations("guix", []store.EvaluationRecord{
 		{ID: 700, Commit: "aaaa1111bbbb2222cccc3333dddd4444eeee5555", Timestamp: now},
 		{ID: 699, Commit: "ffff6666eeee7777dddd8888cccc9999bbbb0000", Timestamp: now.Add(-time.Hour)},
 	}, 40)
 
 	// Eval 700 has 1 pending build (libreoffice)
 	st.SetPullStatus("aaaa1111bbbb2222cccc3333dddd4444eeee5555", "x86_64-linux", 1700, true)
-	st.UpsertSystemEval(700, "aaaa1111bbbb2222cccc3333dddd4444eeee5555", "x86_64-linux", []cuirass.Job{
+	st.UpsertChannelSystemEval("guix", 700, "aaaa1111bbbb2222cccc3333dddd4444eeee5555", "x86_64-linux", []cuirass.Job{
 		{BuildID: 1, Name: "emacs.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "29.4"},
 		{BuildID: 2, Name: "libreoffice.x86_64-linux", Status: cuirass.StatusScheduled, Version: "24.8"},
 	})
 
 	// Eval 699 has 0 pending builds
 	st.SetPullStatus("ffff6666eeee7777dddd8888cccc9999bbbb0000", "x86_64-linux", 1699, true)
-	st.UpsertSystemEval(699, "ffff6666eeee7777dddd8888cccc9999bbbb0000", "x86_64-linux", []cuirass.Job{
+	st.UpsertChannelSystemEval("guix", 699, "ffff6666eeee7777dddd8888cccc9999bbbb0000", "x86_64-linux", []cuirass.Job{
 		{BuildID: 10, Name: "emacs.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "29.4"},
 		{BuildID: 11, Name: "libreoffice.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "24.8"},
 	})
