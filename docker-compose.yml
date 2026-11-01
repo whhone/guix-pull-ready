@@ -8,10 +8,7 @@ services:
     volumes:
       - data:/data
     command:
-      - "--listen=:8080"
       - "--db-path=/data/guix-pull-ready.db"
-      - "--systems=x86_64-linux,aarch64-linux"
-      - "--poll-interval=10m"
 
   tunnel:
     image: docker.io/cloudflare/cloudflared:latest
