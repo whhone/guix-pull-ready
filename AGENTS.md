@@ -2,11 +2,7 @@
 
 ## Project Overview
 
-`guix-pull-ready` provides tools and a public HTTP service to find the newest GNU Guix commit whose substitutes (prebuilt binaries) are ready on `https://ci.guix.gnu.org` (Cuirass), allowing users to run `guix pull` or update `channels.scm` without triggering local source builds.
-
-The repository contains two implementations:
-1. **`guix-sync-commit.scm`**: Standalone Guile Scheme CLI script (`guix repl -- guix-sync-commit.scm [OPTIONS] [SPEC...]`).
-2. **`guix-pull-ready`**: Zero-dependency Go HTTP service that polls Cuirass in the background, caches evaluation and job states locally, and serves instant HTTP responses (`channels.scm` and HTML).
+`guix-pull-ready` finds the newest GNU Guix commit (and optionally coordinated `nonguix` commit) whose prebuilt binary substitutes are ready on Cuirass (`https://ci.guix.gnu.org` and `https://cuirass.nonguix.org`), so `guix pull` and package installations do not trigger local builds from source. It runs as a zero-dependency Go HTTP service (`cmd/guix-pull-ready`, `internal/`) that polls Cuirass in the background, caches state locally, and serves instant responses.
 
 ---
 
@@ -16,14 +12,13 @@ The repository contains two implementations:
 .
 ├── cmd/guix-pull-ready/main.go    # Go service entrypoint and CLI flags
 ├── internal/
-│   ├── api/                       # HTTP handlers (/channels.scm, /favicon.ico, /)
-│   ├── cuirass/                   # Cuirass REST client, JobStatus enum, nixname parsing, Guix VersionGreater
-│   ├── poller/                    # Incremental background poller and lazy /build/<id> version resolver
-│   ├── resolver/                  # Whole-evaluation and package-list query resolution engine
-│   └── store/                     # Crash-safe atomic disk store and lock-free in-memory Snapshot
+│   ├── api/                       # HTTP handlers (/, /channels.scm, /favicon.ico) and HTML dashboard
+│   ├── cuirass/                   # Cuirass REST client, JobStatus, nixname parsing, Guix VersionGreater
+│   ├── poller/                    # Incremental background poller, /build/<id> reconciler, lazy version resolver
+│   ├── resolver/                  # Whole-evaluation, package-list, and multi-channel resolution engine
+│   └── store/                     # Gob atomic disk store and lock-free in-memory Snapshot
 ├── Containerfile                  # Multi-stage static container image build
-├── go.mod                         # Go module definition (100% standard library, zero external dependencies)
-└── guix-sync-commit.scm           # Original Guile Scheme CLI reference implementation
+└── docker-compose.yml             # Container deployment with optional Cloudflare Tunnel
 ```
 
 ---
@@ -31,113 +26,63 @@ The repository contains two implementations:
 ## Architecture & Key Invariants
 
 1. **No Live Cuirass Calls on the Read Hot Path**:
-   - Cuirass endpoints (`/api/jobs`, `/api/jobs/history`) are slow and prone to `504 Gateway Time-out`.
-   - Public HTTP requests read from `store.Snapshot()` (an `atomic.Pointer[Snapshot]`) in memory.
-   - The only outbound calls that may happen on-demand are cached `/build/<id>` lookups via `poller.ResolveMissingVersions` when a user queries a multi-version package (e.g. `gcc-toolchain@14`) whose build IDs have not yet been resolved.
+   - Cuirass endpoints (`/api/jobs`, `/api/evaluations`) are slow and prone to `504 Gateway Time-out`.
+   - HTTP handlers read exclusively from `store.Snapshot()` (`atomic.Pointer[Snapshot]`).
+   - The only outbound calls allowed during a request are cached `/build/<id>` lookups via `poller.ResolveMissingVersions` when a query specifies a multi-version package (e.g. `gcc-toolchain@14`) whose build nixnames are not yet cached.
 
 2. **Incremental Polling & Immutable Completed Evaluations**:
-   - Once an evaluation for a target system has `PendingJobs == 0` and `TotalJobs > 0`, `SystemEvalData.Complete` is set to `true`.
-   - Completed `(evalID, system)` entries are never re-fetched on subsequent poll cycles.
+   - Once a `(channel, evalID, system)` entry has `PendingJobs == 0` and `TotalJobs > 0`, `SystemEvalData.Complete` is set to `true` and it is never re-fetched on subsequent poll cycles.
+   - For systems supported by the `guix` jobset (`x86_64-linux`, `i686-linux`), a commit requires both the `master` evaluation and the `guix` jobset evaluation (`PullReady`) to succeed.
+   - Additional channels (`nonguix`) are correlated by matching the `guix` checkout commit recorded in the channel evaluation against a ready `guix` evaluation for that same commit.
 
 3. **Stuck Pending Build Reconciliation (`/build/<id>`)**:
-   - Upstream Cuirass occasionally suffers from database desync where a job remains stuck with status `-3` (scheduled) or `-1` (started) in `/api/jobs`, even though the underlying build succeeded (e.g. built under another jobset like `science-team`).
-   - When an evaluation is near completion, the poller cross-checks `/build/<id>` for pending builds (up to `MaxReconcilePending`, default 40). If `finished == 1`, it overrides the job status in-place with the canonical `JobStatus(buildstatus)`, allowing evaluations to cleanly transition to `Complete`.
+   - Upstream Cuirass can leave jobs stuck in pending status (`-3` or `-1`) in `/api/jobs` even after the underlying build finishes.
+   - When an evaluation is near completion, the poller cross-checks `/build/<id>` for pending jobs (up to `--max-reconcile-pending`, default 40) and overrides finished statuses in-place so evaluations can transition to `Complete`.
 
-4. **Cuirass Job Status Codes**:
-   - Pending (`IsPending()`): `-3` (`scheduled`), `-2` (`submitted`), `-1` (`started`)
-   - Succeeded (`IsSucceeded()`): `0` (`succeeded`)
-   - Failed (`IsFailed()`): `1` (`failed`), `2` (`failed-dependency`), `3` (`failed-other`), `4` (`canceled`)
+4. **Compact Job Storage (`internal/store`)**:
+   - A Guix evaluation has ~35,000 jobs per system. `SystemEvalData` stores single-job packages as 1-byte statuses in `SingleJobs` (`map[string]int8`) and only allocates slices in `JobsByBase` for multi-version packages (e.g. `gcc-toolchain`, `linux-libre`). Preserve this split when modifying store structures.
 
-4. **Package Spec Resolution (`internal/resolver`)**:
-   - Package specs strip `:output` suffixes (`bind:utils` -> `bind`) and split `@version` (`gcc-toolchain@14` -> name `gcc-toolchain`, version prefix `14`).
-   - Both `<name>.<system>` and `base.<name>.<system>` job names are matched.
-   - Specs not present in any cached evaluation (`TrackedBasePackages`) are reported in `untracked_packages` and skipped so custom/local channel packages do not block resolution.
-   - When a package has multiple jobs in an evaluation and no `@version` is specified, the highest version according to `cuirass.VersionGreater` (GNU `strverscmp` / Guix `version>?`) is selected.
+5. **Package Spec Resolution (`internal/resolver`)**:
+   - Specs strip `:output` suffixes (`bind:utils` -> `bind`) and split `@version` (`gcc-toolchain@14` -> `gcc-toolchain`, version prefix `14`), matching `<name>.<system>` and `base.<name>.<system>`.
+   - Packages absent from `TrackedBasePackages` (and `TrackedChannelPackages`) are reported in `untracked_packages` and skipped so local/custom packages do not block resolution.
+   - Multi-version packages without `@version` select the highest version using `cuirass.VersionGreater` (GNU `strverscmp` / Guix `version>?`).
 
-5. **Zero External Dependencies**:
-   - Keep `go.mod` free of third-party dependencies so the project compiles offline, in minimal containers, and with Guix's `go-build-system` without extra Go library packaging.
+6. **Zero External Dependencies**:
+   - Keep `go.mod` limited to the Go standard library so the binary compiles offline, in minimal containers, and under Guix's `go-build-system`.
 
 ---
 
-## Common Commands
+## HTTP API & Query Parameters
 
-### Build & Test (Go Service)
+Routes: `GET /` (HTML dashboard), `GET /channels.scm` (`text/x-scheme` channel snippet), `GET /favicon.ico`.
+
+| Parameter | Default | Description |
+| :--- | :--- | :--- |
+| `system` | `x86_64-linux` | Target architecture (`x86_64-linux`, `aarch64-linux`, `powerpc64le-linux`, `riscv64-linux`) |
+| `max_pending` | `0` | Whole-evaluation mode: maximum acceptable pending builds |
+| `pkgs` | *(none)* | Comma- or space-separated package specs (e.g. `emacs,git,gcc-toolchain@14`) |
+| `additional_channels` | *(none)* | Additional channels to coordinate with Guix (`nonguix`) |
+| `allow_failed` | `false` | Package mode: allow failed builds (only pending builds block) |
+| `limit` | `40` | Number of recent evaluations to scan (max 100) |
+
+---
+
+## Development & Testing
+
 ```bash
 # Run all unit and integration tests
 go test -v ./...
 
-# Build the static binary
-CGO_ENABLED=0 go build -trimpath -o guix-pull-ready ./cmd/guix-pull-ready
-
-# Run directly in a single command (no build step needed)
-go run ./cmd/guix-pull-ready
-
-# Run directly in-memory without writing to disk
+# Run service locally in-memory (preferred for testing)
 go run ./cmd/guix-pull-ready --db-path=:memory:
 
-# Run locally with custom options
-./guix-pull-ready --listen=:8080 --db-path=./guix-pull-ready.db --systems=x86_64-linux,aarch64-linux --limit=40
+# Build portable static binary (forces pure-Go netgo DNS resolver instead of glibc)
+CGO_ENABLED=0 go build -trimpath -o guix-pull-ready ./cmd/guix-pull-ready
+
+# Smoke-test HTTP endpoints locally
+curl -fsSL "http://localhost:8080/channels.scm?pkgs=emacs,git"
 ```
 
-**Why `CGO_ENABLED=0` for static builds:**
-- By default on Linux (`CGO_ENABLED=1`), Go's standard library `net` package links against the host's C library (`glibc` / `libc.so.6`) for `getaddrinfo()` DNS resolution, producing a dynamically linked binary with a hardcoded ELF interpreter path (such as `/lib64/ld-linux-x86-64.so.2` or `/gnu/store/...-glibc-.../lib/ld-linux-x86-64.so.2`).
-- Setting `CGO_ENABLED=0` forces Go to use its built-in pure-Go DNS resolver (`netgo`), producing a self-contained static binary that runs across standard Linux distributions, GNU Guix (non-FHS), and minimal `libc`-less container images (`Containerfile`). For local development on the same host (`go build` or `go run`), `CGO_ENABLED=0` is optional.
-
-### Run Reference Guile Script
-```bash
-# Whole-evaluation mode
-guix repl -- guix-sync-commit.scm --max-pending=0
-
-# Package mode
-guix repl -- guix-sync-commit.scm emacs git gcc-toolchain@14
-```
-
----
-
-## HTTP API Endpoints & Curl Examples
-
-The service listens on `:8080` by default. All endpoints accept `GET` requests with query parameters.
-
-### Query Parameters
-
-| Parameter | Default | Description |
-| :--- | :--- | :--- |
-| `system` | `x86_64-linux` | Target architecture (e.g. `x86_64-linux`, `aarch64-linux`) |
-| `max_pending` | `0` | Whole-evaluation mode: maximum acceptable pending builds |
-| `pkgs` | *(none)* | Comma-separated or space-separated package specs (e.g. `emacs,git,gcc-toolchain@14`) |
-| `additional_channels` | *(none)* | Comma-separated additional channels to coordinate with Guix (e.g. `nonguix`) |
-| `allow_failed` | `false` | Package mode: allow failed builds (only pending builds block) |
-| `limit` | `40` | Number of recent master evaluations to scan (max 100) |
-
-### Endpoints
-
-#### 1. Channel Specification (`GET /channels.scm`)
-Returns a Scheme snippet (`text/x-scheme`) with evaluation metadata in comments, ready for `guix pull -C`, `downloaded-channels`, `~/.config/guix/channels.scm`, or `guix time-machine`.
-
-```bash
-# Pull latest ready commit directly
-guix pull -C <(curl -fsSL "http://localhost:8080/channels.scm")
-
-# Pull latest ready commit for aarch64-linux
-guix pull -C <(curl -fsSL "http://localhost:8080/channels.scm?system=aarch64-linux")
-
-# Pull both guix and nonguix at their coordinated ready commits
-guix pull -C <(curl -fsSL "http://localhost:8080/channels.scm?additional_channels=nonguix")
-
-# Overwrite channels.scm with latest ready commit
-curl -fsSL "http://localhost:8080/channels.scm?system=x86_64-linux" > ~/.config/guix/channels.scm
-
-# Run an ephemeral shell with guaranteed prebuilt binaries
-guix time-machine -C <(curl -fsSL "http://localhost:8080/channels.scm?pkgs=emacs,git") -- shell emacs git
-```
-
-#### 2. Service Overview & Usage (`GET /`)
-Returns an HTML dashboard table of recent evaluations, ready commits, and copyable CLI commands (supports `?system=aarch64-linux` and `?additional_channels=nonguix`).
-
----
-
-## Style & Contribution Rules
-
-- **Conventional Commits**: Always format commit messages following the Conventional Commits specification (e.g., `feat(api): ...`, `fix(poller): ...`, `docs: ...`).
-- **No Em-Dashes**: Avoid using em-dashes in code comments, documentation, and commit messages. Use parentheses `( )` or commas `,` instead.
-- **Maintain Parity**: When modifying resolution semantics in `internal/resolver` or `guix-sync-commit.scm`, keep behavior consistent between both implementations and add corresponding test cases in `internal/resolver/resolver_test.go`.
+### Rules
+- **Go Builds**: Always use `CGO_ENABLED=0 go build -trimpath` when compiling Go binaries intended for portable execution or container images, ensuring the static pure-Go resolver (`netgo`) is linked instead of glibc `getaddrinfo`.
+- **Ephemeral Testing**: When developing or testing the service locally, prefer in-memory storage (`--db-path=:memory:`) instead of repeatedly wiping database files on disk.

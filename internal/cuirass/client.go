@@ -229,8 +229,7 @@ func (b Build) Status() JobStatus {
 }
 
 // ResolvedNixName returns the "<name>-<version>" string extracted from the store
-// derivation path (matching extract-nixname in guix-sync-commit.scm), or falls back
-// to NixName if Derivation is empty.
+// derivation path (via ExtractNixname), or falls back to NixName if Derivation is empty.
 func (b Build) ResolvedNixName() string {
 	if b.Derivation != "" {
 		if nix := ExtractNixname(b.Derivation); nix != "" {
@@ -499,7 +498,6 @@ func (c *Client) CommitTimestamp(ctx context.Context, commit string) (time.Time,
 // its base package name ("gcc-toolchain") and requested version prefix ("14").
 // Any ":output" suffix (such as ":utils" or ":debug") is stripped first because
 // Cuirass tracks builds at the derivation/package level rather than per output.
-// Matches spec->name+ver in guix-sync-commit.scm.
 func SpecToNameAndVer(spec string) (name string, reqVer string) {
 	spec = strings.TrimSpace(spec)
 	if spec == "" {
@@ -518,7 +516,6 @@ func SpecToNameAndVer(spec string) (name string, reqVer string) {
 // ExtractNixname extracts the "<package>-<version>" nixname from a Guix store derivation path
 // by stripping the directory, the 32-character store hash prefix, and the ".drv" suffix.
 // Example: "/gnu/store/0123456789abcdef-gcc-toolchain-14.2.0.drv" -> "gcc-toolchain-14.2.0".
-// Matches extract-nixname in guix-sync-commit.scm.
 func ExtractNixname(drv string) string {
 	if drv == "" {
 		return ""
@@ -534,7 +531,6 @@ func ExtractNixname(drv string) string {
 
 // NixnameToVersion strips the "<name>-" prefix from a nixname to yield the version string.
 // Example: ("gcc-toolchain", "gcc-toolchain-14.2.0") -> "14.2.0".
-// Matches nixname->version in guix-sync-commit.scm.
 func NixnameToVersion(name, nixname string) string {
 	prefix := name + "-"
 	if strings.HasPrefix(nixname, prefix) {

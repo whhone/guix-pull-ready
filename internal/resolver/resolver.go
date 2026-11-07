@@ -571,8 +571,7 @@ func classifySpecJobs(matched []cuirass.Job, allowFailed bool) specStatus {
 	return specStatusSucceeded
 }
 
-// ResolveJobsForSpec filters and resolves the jobs matching a package spec (e.g. "gcc-toolchain@14").
-// Matches resolve-jobs-for-spec in guix-sync-commit.scm:
+// ResolveJobsForSpec filters and resolves the jobs matching a package spec (e.g. "gcc-toolchain@14"):
 //  1. Matches both "<name>.<system>" and "base.<name>.<system>" job names.
 //  2. If no "@version" prefix is requested and all matching jobs succeeded, returns all of them immediately.
 //  3. If only a single job matched, returns it.
