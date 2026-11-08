@@ -99,6 +99,15 @@ CGO_ENABLED=0 go build -trimpath -o guix-pull-ready ./cmd/guix-pull-ready
 
 ## Known Issues & Automatic Reconciliation
 
+### Still Building Locally
+
+After pulling from `guix-pull-ready`, you may occasionally find that a specific package (such as `github-cli`) still builds locally during `guix system reconfigure`, `guix home reconfigure`, or `guix install`, and `guix weather <pkg>` reports `0.0% substitutes available` with `0.0% of the missing items are queued`.
+
+- **Root Cause**: `guix-pull-ready` selects the newest evaluation with `0` **pending** builds. It does not require `0` **failed** builds, because across ~35,000 packages in a full Guix evaluation, hundreds or thousands of jobs always fail on CI (`Failed`, `Failed (dependency)`, or `Canceled`). Once all scheduled builds finish, the evaluation has `0` pending jobs even though individual packages failed and produced no substitutes.
+- **Will the Local Build Succeed or Fail?**:
+  - **Local build succeeds (fixed-output cutoff or alternate substitute server)**: If Cuirass aborted the package with `Failed (dependency)` because a tool needed by a fixed-output derivation failed (for example, `github-cli` -> `go-github-com-charmbracelet-huh` -> `go-github-com-charmbracelet-huh-checkout` -> `git-lfs` -> `ronn-ng` -> ... -> `ruby-mysql2`), the fixed-output checkout store path (`r:sha256`) is content-addressed and often already available as a substitute from an earlier evaluation or `bordeaux.guix.gnu.org`. Your local `guix-daemon` substitutes the intermediate dependency, skips the broken upstream chain, and only compiles the top-level package locally.
+  - **Local build fails (direct deterministic failure)**: If the package itself (or a required dependency with no available substitute) failed to compile or pass tests (`Failed`), the local isolated build will fail identically.
+
 ### Cuirass Upstream `Jobs` Cache Desynchronization
 
 Occasionally, an upstream evaluation may appear stuck with a small number of builds (e.g. 1 to 4 packages) marked as pending indefinitely, even though the underlying builds have already succeeded.
