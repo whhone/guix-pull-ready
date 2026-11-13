@@ -55,6 +55,8 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/", s.handleIndex)
 	s.mux.HandleFunc("/favicon.ico", s.handleFavicon)
 	s.mux.HandleFunc("/channels.scm", s.handleChannelsSCM)
+	s.mux.HandleFunc("/packages/", s.handlePackageStatus)
+	s.mux.HandleFunc("/substitutes/", s.handleSubstitutes)
 }
 
 //go:embed static/favicon.svg
@@ -103,6 +105,121 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = io.WriteString(w, renderHTMLDashboard(st))
+}
+
+// handlePackageStatus serves the HTML package status page ("/packages/<package-name>")
+// displaying evaluation history, Latest Ready availability, and newest ready commit for a package.
+func (s *Server) handlePackageStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	rawSpec := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/packages/"))
+	if rawSpec == "" || strings.Contains(rawSpec, "/") {
+		http.NotFound(w, r)
+		return
+	}
+
+	snap := s.store.Snapshot()
+	baseURL := detectBaseURL(r)
+	reqSystem := strings.TrimSpace(r.URL.Query().Get("system"))
+	requireNonguix := hasAdditionalChannel(r, "nonguix")
+
+	activeSystem := selectActiveSystem(snap, reqSystem)
+	if s.poller != nil && snap != nil {
+		// Asynchronously populate version strings in the background if this package has multiple jobs.
+		s.poller.TriggerSpecVersionResolution(activeSystem, rawSpec, resolver.SupportedAdditionalChannels...)
+	}
+
+	st := buildPackagePageState(baseURL, snap, rawSpec, reqSystem, requireNonguix)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if !st.TrackedInGuix && !st.TrackedInNonguix {
+		w.WriteHeader(http.StatusNotFound)
+	}
+	_, _ = io.WriteString(w, renderHTMLPackagePage(st))
+}
+
+// handleSubstitutes serves the HTML evaluation details page ("/substitutes/<server-name>/evaluations/<id>")
+// displaying evaluation metadata, job breakdown, and package statuses for that substitute server's evaluation.
+func (s *Server) handleSubstitutes(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	rest := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/substitutes/"))
+	parts := strings.Split(rest, "/")
+	if len(parts) != 3 || parts[0] == "" || parts[1] != "evaluations" || parts[2] == "" {
+		http.NotFound(w, r)
+		return
+	}
+	serverName := parts[0]
+	evalID, err := strconv.ParseInt(parts[2], 10, 64)
+	if err != nil || evalID <= 0 {
+		http.NotFound(w, r)
+		return
+	}
+
+	snap := s.store.Snapshot()
+	channel, ok := resolveSubstituteChannel(snap, serverName)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+
+	baseURL := detectBaseURL(r)
+	reqSystem := strings.TrimSpace(r.URL.Query().Get("system"))
+	requireNonguix := hasAdditionalChannel(r, "nonguix")
+
+	activeSystem := selectActiveSystem(snap, reqSystem)
+	if s.poller != nil && snap != nil {
+		evalChannel := channel
+		if channel == "guix" {
+			foundMaster := false
+			for _, ev := range snap.Evaluations {
+				if ev.ID == evalID {
+					foundMaster = true
+					break
+				}
+			}
+			if !foundMaster {
+				for _, ev := range snap.ChannelEvaluations[store.GuixJobsetChannel] {
+					if ev.ID == evalID {
+						evalChannel = store.GuixJobsetChannel
+						break
+					}
+				}
+			}
+		}
+		// Asynchronously populate uncached multi-job versions in the background so the page renders instantaneously.
+		s.poller.TriggerEvalVersionResolution(evalChannel, evalID, activeSystem, 60)
+	}
+
+	st := buildEvaluationPageState(baseURL, snap, channel, serverName, evalID, reqSystem, requireNonguix)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if !st.Found {
+		w.WriteHeader(http.StatusNotFound)
+	}
+	_, _ = io.WriteString(w, renderHTMLEvaluationPage(st))
+}
+
+func resolveSubstituteChannel(snap *store.Snapshot, serverName string) (string, bool) {
+	if serverName == "ci.guix.gnu.org" {
+		return "guix", true
+	}
+	if serverName == "cuirass.nonguix.org" {
+		return "nonguix", true
+	}
+	if snap != nil {
+		if serverHost(snap.ServerURL) == serverName {
+			return "guix", true
+		}
+		for ch, rawURL := range snap.ChannelServerURLs {
+			if serverHost(rawURL) == serverName {
+				return ch, true
+			}
+		}
+	}
+	return "", false
 }
 
 func hasAdditionalChannel(r *http.Request, target string) bool {

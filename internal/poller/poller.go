@@ -47,6 +47,9 @@ type Poller struct {
 	syncing          bool
 	refreshedCycle   map[store.ChannelEvalSystemKey]uint64
 	reconciledBuilds map[store.ChannelBuildKey]cuirass.JobStatus
+	stuckCycle       map[store.ChannelBuildKey]uint64
+	resolvingEvals   map[store.ChannelEvalSystemKey]bool
+	resolvingSpecs   map[string]bool
 	cycleCounter     uint64
 }
 
@@ -77,6 +80,9 @@ func New(client *cuirass.Client, st *store.Store, cfg Config) *Poller {
 		cfg:              cfg,
 		refreshedCycle:   make(map[store.ChannelEvalSystemKey]uint64),
 		reconciledBuilds: make(map[store.ChannelBuildKey]cuirass.JobStatus),
+		stuckCycle:       make(map[store.ChannelBuildKey]uint64),
+		resolvingEvals:   make(map[store.ChannelEvalSystemKey]bool),
+		resolvingSpecs:   make(map[string]bool),
 	}
 }
 
@@ -165,7 +171,10 @@ func (p *Poller) syncEvaluations(ctx context.Context) error {
 
 	referencedGuixCommits := make(map[string]bool)
 	if snap := p.store.Snapshot(); snap != nil {
-		for _, chEvals := range snap.ChannelEvaluations {
+		for chName, chEvals := range snap.ChannelEvaluations {
+			if chName == store.GuixJobsetChannel {
+				continue
+			}
 			for _, ev := range chEvals {
 				if c := ev.Checkouts["guix"]; c != "" {
 					referencedGuixCommits[c] = true
@@ -248,7 +257,9 @@ func (p *Poller) syncEvaluations(ctx context.Context) error {
 		guixPullLimit = masterFetchLimit * 2
 	}
 	guixEvalByCommit := make(map[string]int64)
+	var guixJobsetRecords []store.EvaluationRecord
 	if guixEvals, err := p.client.LatestEvaluations(ctx, "guix", guixPullLimit); err == nil {
+		guixJobsetRecords = make([]store.EvaluationRecord, 0, len(guixEvals))
 		for _, gev := range guixEvals {
 			commit := gev.PrimaryCommit()
 			if commit != "" && commit != "unknown" {
@@ -257,6 +268,16 @@ func (p *Poller) syncEvaluations(ctx context.Context) error {
 					guixEvalByCommit[commit] = gev.ID
 				}
 			}
+			guixJobsetRecords = append(guixJobsetRecords, store.EvaluationRecord{
+				ID:        gev.ID,
+				Channel:   store.GuixJobsetChannel,
+				Commit:    commit,
+				Checkouts: gev.CheckoutsMap(),
+				Timestamp: gev.StartTime(),
+			})
+		}
+		if len(guixJobsetRecords) > 0 {
+			p.store.UpdateChannelEvaluations(store.GuixJobsetChannel, guixJobsetRecords, guixPullLimit*2)
 		}
 	} else {
 		log.Warn("failed to fetch guix jobset evaluations", "err", err)
@@ -286,13 +307,35 @@ func (p *Poller) syncEvaluations(ctx context.Context) error {
 				hasPullEval = true
 			}
 			if hasPullEval {
-				if !hasCachedPull || !cachedPull.Ready || cachedPull.EvalID != pullEvID {
-					pullReady := p.checkGuixPullReady(ctx, pullEvID, sys)
+				alreadyComplete := hasCachedPull && cachedPull.EvalID == pullEvID &&
+					p.store.IsChannelEvalSystemComplete(store.GuixJobsetChannel, pullEvID, sys)
+				if !alreadyComplete {
+					pullReady, hasJobs := p.syncGuixPullEval(ctx, pullEvID, ev.Commit, sys, cycle)
 					p.store.SetPullStatus(ev.Commit, sys, pullEvID, pullReady)
-					if !hasCachedPull || cachedPull.Ready != pullReady || cachedPull.EvalID != pullEvID {
+					if hasJobs || !hasCachedPull || cachedPull.Ready != pullReady || cachedPull.EvalID != pullEvID {
 						pullStatusChanged = true
 					}
 				}
+			}
+		}
+		if len(guixJobsetRecords) > 0 && cuirass.SupportsGuixJobset(sys) {
+			if p.recheckCompleteStuckBuilds(ctx, p.client, store.GuixJobsetChannel, guixJobsetRecords, sys, cycle) > 0 {
+				if snap := p.store.Snapshot(); snap != nil {
+					for _, ev := range records {
+						cachedPull, ok := p.store.GetPullStatus(ev.Commit, sys)
+						if !ok || cachedPull.EvalID <= 0 || cachedPull.Ready {
+							continue
+						}
+						if pullData := snap.ByChannelEvalSystem[store.ChannelEvalSystemKey{
+							Channel: store.GuixJobsetChannel,
+							EvalID:  cachedPull.EvalID,
+							System:  sys,
+						}]; pullData != nil && pullData.TotalJobs > 0 && pullData.SucceededJobs == pullData.TotalJobs {
+							p.store.SetPullStatus(ev.Commit, sys, cachedPull.EvalID, true)
+						}
+					}
+				}
+				pullStatusChanged = true
 			}
 		}
 		if pullStatusChanged {
@@ -370,7 +413,7 @@ func (p *Poller) syncEvaluations(ctx context.Context) error {
 				continue
 			}
 
-			p.reconcilePendingJobs(ctx, p.client, "guix", sys, jobs)
+			p.reconcilePendingJobs(ctx, p.client, "guix", sys, cycle, jobs)
 
 			p.mu.Lock()
 			p.refreshedCycle[store.ChannelEvalSystemKey{Channel: "guix", EvalID: ev.ID, System: sys}] = cycle
@@ -383,6 +426,8 @@ func (p *Poller) syncEvaluations(ctx context.Context) error {
 			// without serializing the entire database to disk on every evaluation.
 			p.store.PublishSnapshot()
 		}
+
+		updatedCount += p.recheckCompleteStuckBuilds(ctx, p.client, "guix", records, sys, cycle)
 	}
 
 	if err := p.store.Save(); err != nil {
@@ -521,7 +566,7 @@ func (p *Poller) syncAdditionalChannel(ctx context.Context, ch ChannelConfig, cy
 				continue
 			}
 
-			p.reconcilePendingJobs(ctx, ch.Client, ch.Name, sys, jobs)
+			p.reconcilePendingJobs(ctx, ch.Client, ch.Name, sys, cycle, jobs)
 
 			p.mu.Lock()
 			p.refreshedCycle[store.ChannelEvalSystemKey{Channel: ch.Name, EvalID: ev.ID, System: sys}] = cycle
@@ -531,6 +576,8 @@ func (p *Poller) syncAdditionalChannel(ctx context.Context, ch ChannelConfig, cy
 			updatedCount++
 			p.store.PublishSnapshot()
 		}
+
+		updatedCount += p.recheckCompleteStuckBuilds(ctx, ch.Client, ch.Name, records, sys, cycle)
 	}
 
 	return updatedCount
@@ -561,7 +608,7 @@ func (p *Poller) syncAdditionalChannel(ctx context.Context, ch ChannelConfig, cy
 //  4. If all pending jobs reconcile to succeeded (or failed), the evaluation naturally reaches
 //     PendingJobs == 0 and is marked Complete in the Store, permanently unblocking it from
 //     blocking whole-evaluation mode.
-func (p *Poller) reconcilePendingJobs(ctx context.Context, client *cuirass.Client, channel string, system string, jobs []cuirass.Job) {
+func (p *Poller) reconcilePendingJobs(ctx context.Context, client *cuirass.Client, channel string, system string, cycle uint64, jobs []cuirass.Job) {
 	if p.cfg.MaxReconcilePending <= 0 || client == nil || len(jobs) == 0 {
 		return
 	}
@@ -575,7 +622,7 @@ func (p *Poller) reconcilePendingJobs(ctx context.Context, client *cuirass.Clien
 		buildID int64
 	}
 
-	// 1. Fast path: apply previously reconciled build statuses from cache.
+	// 1. Fast path: apply previously reconciled build statuses (or current-cycle stuck statuses) from cache.
 	p.mu.RLock()
 	for i := range jobs {
 		if !strings.HasSuffix(jobs[i].Name, suffix) {
@@ -585,6 +632,8 @@ func (p *Poller) reconcilePendingJobs(ctx context.Context, client *cuirass.Clien
 			key := store.ChannelBuildKey{Channel: channel, BuildID: jobs[i].BuildID}
 			if cachedStatus, ok := p.reconciledBuilds[key]; ok {
 				jobs[i].Status = cachedStatus
+			} else if p.stuckCycle[key] == cycle {
+				jobs[i].Status = cuirass.StatusStuck
 			}
 		}
 	}
@@ -643,6 +692,7 @@ func (p *Poller) reconcilePendingJobs(ctx context.Context, client *cuirass.Clien
 
 			p.mu.Lock()
 			p.reconciledBuilds[key] = status
+			delete(p.stuckCycle, key)
 			p.mu.Unlock()
 
 			p.cfg.Logger.Info("reconciled stuck pending job via /build/<id>",
@@ -652,6 +702,20 @@ func (p *Poller) reconcilePendingJobs(ctx context.Context, client *cuirass.Clien
 				"original_status", "pending",
 				"reconciled_status", status,
 			)
+		} else if b.IsStuckPending() {
+			jobs[item.index].Status = cuirass.StatusStuck
+
+			p.mu.Lock()
+			p.stuckCycle[key] = cycle
+			p.mu.Unlock()
+
+			p.cfg.Logger.Info("classified rescheduled failing build as stuck via /build/<id>",
+				"channel", channel,
+				"build_id", item.buildID,
+				"job", jobs[item.index].Name,
+				"stoptime", b.StopTime,
+				"weather", b.Weather,
+			)
 		}
 	}
 
@@ -660,19 +724,124 @@ func (p *Poller) reconcilePendingJobs(ctx context.Context, client *cuirass.Clien
 	}
 }
 
-// checkGuixPullReady returns true if the "guix" jobset evaluation for a commit
-// has at least one job for system and all jobs for system succeeded.
-func (p *Poller) checkGuixPullReady(ctx context.Context, pullEvalID int64, system string) bool {
-	jobs, err := p.client.EvaluationJobs(ctx, pullEvalID, system)
-	if err != nil || len(jobs) == 0 {
-		return false
+// recheckCompleteStuckBuilds performs lightweight /build/<id> probes for builds marked StatusStuck
+// on evaluations that are already Complete (PendingJobs == 0). If Cuirass eventually finishes the
+// build, the store transitions that job in-place without re-downloading 35,000 /api/jobs entries.
+func (p *Poller) recheckCompleteStuckBuilds(ctx context.Context, client *cuirass.Client, channel string, records []store.EvaluationRecord, system string, cycle uint64) int {
+	if p.cfg.MaxReconcilePending <= 0 || client == nil || p.store == nil || len(records) == 0 {
+		return 0
 	}
-	for _, j := range jobs {
-		if !j.Status.IsSucceeded() {
-			return false
+	if channel == "" {
+		channel = "guix"
+	}
+	snap := p.store.Snapshot()
+	if snap == nil {
+		return 0
+	}
+
+	seen := make(map[int64]bool)
+	var candidateBuildIDs []int64
+	for _, ev := range records {
+		var data *store.SystemEvalData
+		if channel == "guix" {
+			data = snap.ByEvalSystem[store.EvalSystemKey{EvalID: ev.ID, System: system}]
+		} else {
+			data = snap.ByChannelEvalSystem[store.ChannelEvalSystemKey{Channel: channel, EvalID: ev.ID, System: system}]
+		}
+		if data == nil || !data.Complete || len(data.StuckBuilds) == 0 {
+			continue
+		}
+		for _, pb := range data.StuckBuilds {
+			if pb.BuildID > 0 && !seen[pb.BuildID] {
+				seen[pb.BuildID] = true
+				candidateBuildIDs = append(candidateBuildIDs, pb.BuildID)
+			}
 		}
 	}
-	return true
+	if len(candidateBuildIDs) == 0 {
+		return 0
+	}
+
+	var updatedEvals int
+	var checked int
+	nixMap := make(map[int64]string)
+
+	for _, buildID := range candidateBuildIDs {
+		if ctx.Err() != nil {
+			break
+		}
+		key := store.ChannelBuildKey{Channel: channel, BuildID: buildID}
+
+		p.mu.RLock()
+		cachedStatus, isReconciled := p.reconciledBuilds[key]
+		alreadyStuckThisCycle := p.stuckCycle[key] == cycle
+		p.mu.RUnlock()
+
+		if isReconciled {
+			updatedEvals += p.store.ResolveStuckBuild(channel, buildID, cachedStatus)
+			continue
+		}
+		if alreadyStuckThisCycle {
+			continue
+		}
+		if checked >= p.cfg.MaxReconcilePending {
+			break
+		}
+		checked++
+
+		b, err := client.Build(ctx, buildID)
+		if err != nil {
+			continue
+		}
+		if nix := b.ResolvedNixName(); nix != "" && b.ID > 0 {
+			nixMap[b.ID] = nix
+		}
+		if b.IsFinished() {
+			status := b.Status()
+			p.mu.Lock()
+			p.reconciledBuilds[key] = status
+			delete(p.stuckCycle, key)
+			p.mu.Unlock()
+			updatedEvals += p.store.ResolveStuckBuild(channel, buildID, status)
+		} else if b.IsStuckPending() {
+			p.mu.Lock()
+			p.stuckCycle[key] = cycle
+			p.mu.Unlock()
+		}
+	}
+
+	if len(nixMap) > 0 {
+		p.store.SetChannelBuildNixNames(channel, nixMap)
+	}
+	if updatedEvals > 0 {
+		p.store.PublishSnapshot()
+	}
+	return updatedEvals
+}
+
+// syncGuixPullEval fetches and stores jobs for a "guix" jobset evaluation on system,
+// returning whether `guix pull` substitutes are ready (all jobs succeeded) and whether
+// any job entries were persisted.
+func (p *Poller) syncGuixPullEval(ctx context.Context, pullEvalID int64, commit string, system string, cycle uint64) (bool, bool) {
+	jobs, err := p.client.EvaluationJobs(ctx, pullEvalID, system)
+	if err != nil || len(jobs) == 0 {
+		return false, false
+	}
+	p.reconcilePendingJobs(ctx, p.client, store.GuixJobsetChannel, system, cycle, jobs)
+	p.store.UpsertChannelSystemEval(store.GuixJobsetChannel, pullEvalID, commit, system, jobs)
+
+	suffix := "." + system
+	var matched int
+	for _, j := range jobs {
+		if !strings.HasSuffix(j.Name, suffix) {
+			continue
+		}
+		matched++
+		if !j.Status.IsSucceeded() {
+			return false, true
+		}
+	}
+	return matched > 0, true
 }
 
 // ResolveMissingVersions lazily fetches /build/<id> for any multi-job packages in the requested
@@ -691,6 +860,78 @@ func (p *Poller) checkGuixPullReady(ctx context.Context, pullEvalID int64, syste
 //     guaranteed to have succeeded too.
 //   - Resolved build ID -> nixname mappings are permanently cached in the Store across restarts.
 func (p *Poller) ResolveMissingVersions(ctx context.Context, system string, specs []string, additionalChannels ...string) {
+	p.resolveSpecsVersions(ctx, system, specs, false, additionalChannels...)
+}
+
+// TriggerSpecVersionResolution asynchronously resolves /build/<id> nixnames in the background
+// for all multi-job builds of spec across cached evaluations so HTTP requests never block.
+func (p *Poller) TriggerSpecVersionResolution(system string, spec string, additionalChannels ...string) {
+	if spec == "" {
+		return
+	}
+	key := system + ":" + spec
+	p.mu.Lock()
+	if p.resolvingSpecs[key] {
+		p.mu.Unlock()
+		return
+	}
+	p.resolvingSpecs[key] = true
+	p.mu.Unlock()
+
+	chCopy := append([]string(nil), additionalChannels...)
+	go func() {
+		defer func() {
+			p.mu.Lock()
+			delete(p.resolvingSpecs, key)
+			p.mu.Unlock()
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		p.ResolveAllVersionsForSpec(ctx, system, spec, chCopy...)
+	}()
+}
+
+// TriggerEvalVersionResolution asynchronously resolves uncached /build/<id> nixnames in the background
+// for multi-job packages in a single evaluation so HTTP requests never block on Cuirass I/O.
+func (p *Poller) TriggerEvalVersionResolution(channel string, evalID int64, system string, maxBuilds int) {
+	if maxBuilds <= 0 || evalID <= 0 {
+		return
+	}
+	if channel == "" {
+		channel = "guix"
+	}
+	key := store.ChannelEvalSystemKey{Channel: channel, EvalID: evalID, System: system}
+	p.mu.Lock()
+	if p.resolvingEvals[key] {
+		p.mu.Unlock()
+		return
+	}
+	p.resolvingEvals[key] = true
+	p.mu.Unlock()
+
+	go func() {
+		defer func() {
+			p.mu.Lock()
+			delete(p.resolvingEvals, key)
+			p.mu.Unlock()
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		p.ResolveEvalMissingVersions(ctx, channel, evalID, system, maxBuilds)
+	}()
+}
+
+// ResolveAllVersionsForSpec resolves /build/<id> nixnames for all multi-job builds of spec
+// across cached evaluations (including evaluations where all builds succeeded) so package
+// status pages can display every version string.
+func (p *Poller) ResolveAllVersionsForSpec(ctx context.Context, system string, spec string, additionalChannels ...string) {
+	if spec == "" {
+		return
+	}
+	p.resolveSpecsVersions(ctx, system, []string{spec}, true, additionalChannels...)
+}
+
+func (p *Poller) resolveSpecsVersions(ctx context.Context, system string, specs []string, forceAll bool, additionalChannels ...string) {
 	if len(specs) == 0 {
 		return
 	}
@@ -702,7 +943,7 @@ func (p *Poller) ResolveMissingVersions(ctx context.Context, system string, spec
 	var anyUpdated bool
 	if p.resolveChannelMissingVersions(ctx, "guix", p.client, snap.Evaluations, func(evalID int64) *store.SystemEvalData {
 		return snap.ByEvalSystem[store.EvalSystemKey{EvalID: evalID, System: system}]
-	}, specs) {
+	}, specs, forceAll) {
 		anyUpdated = true
 	}
 
@@ -724,13 +965,107 @@ func (p *Poller) ResolveMissingVersions(ctx context.Context, system string, spec
 			}
 			if p.resolveChannelMissingVersions(ctx, chName, client, evals, func(evalID int64) *store.SystemEvalData {
 				return snap.ByChannelEvalSystem[store.ChannelEvalSystemKey{Channel: chName, EvalID: evalID, System: system}]
-			}, specs) {
+			}, specs, forceAll) {
 				anyUpdated = true
 			}
 		}
 	}
 
 	if anyUpdated {
+		_ = p.store.Save()
+	}
+}
+
+// ResolveEvalMissingVersions resolves uncached /build/<id> nixnames for multi-job packages
+// in a single (channel, evalID, system) evaluation up to maxBuilds, prioritizing packages
+// that have at least one failed or pending build (such as cmake @4.1.3 succeeded + @3.25.3 failed).
+func (p *Poller) ResolveEvalMissingVersions(ctx context.Context, channel string, evalID int64, system string, maxBuilds int) {
+	if maxBuilds <= 0 {
+		return
+	}
+	snap := p.store.Snapshot()
+	if snap == nil {
+		return
+	}
+	if channel == "" {
+		channel = "guix"
+	}
+
+	var client *cuirass.Client
+	var data *store.SystemEvalData
+	if channel == "guix" {
+		client = p.client
+		data = snap.ByEvalSystem[store.EvalSystemKey{EvalID: evalID, System: system}]
+	} else if channel == store.GuixJobsetChannel {
+		client = p.client
+		data = snap.ByChannelEvalSystem[store.ChannelEvalSystemKey{Channel: channel, EvalID: evalID, System: system}]
+	} else {
+		for _, ch := range p.cfg.AdditionalChannels {
+			if ch.Name == channel {
+				client = ch.Client
+				break
+			}
+		}
+		data = snap.ByChannelEvalSystem[store.ChannelEvalSystemKey{Channel: channel, EvalID: evalID, System: system}]
+	}
+	if client == nil || data == nil || len(data.JobsByBase) == 0 {
+		return
+	}
+
+	var priorityBuildIDs []int64
+	var secondaryBuildIDs []int64
+	seen := make(map[int64]bool)
+
+	baseNames := make([]string, 0, len(data.JobsByBase))
+	for basePkg := range data.JobsByBase {
+		baseNames = append(baseNames, basePkg)
+	}
+	sort.Strings(baseNames)
+
+	for _, basePkg := range baseNames {
+		jobs := data.JobsByBase[basePkg]
+		if len(jobs) <= 1 {
+			continue
+		}
+		allSucceeded := true
+		for _, j := range jobs {
+			if !j.Status.IsSucceeded() {
+				allSucceeded = false
+				break
+			}
+		}
+		for _, j := range jobs {
+			if j.BuildID <= 0 || seen[j.BuildID] {
+				continue
+			}
+			if _, ok := p.store.GetChannelBuildNixName(channel, j.BuildID); ok {
+				continue
+			}
+			seen[j.BuildID] = true
+			if !allSucceeded {
+				priorityBuildIDs = append(priorityBuildIDs, j.BuildID)
+			} else {
+				secondaryBuildIDs = append(secondaryBuildIDs, j.BuildID)
+			}
+		}
+	}
+
+	toFetch := priorityBuildIDs
+	if len(toFetch) < maxBuilds && len(secondaryBuildIDs) > 0 {
+		need := maxBuilds - len(toFetch)
+		if need > len(secondaryBuildIDs) {
+			need = len(secondaryBuildIDs)
+		}
+		toFetch = append(toFetch, secondaryBuildIDs[:need]...)
+	}
+	if len(toFetch) > maxBuilds {
+		toFetch = toFetch[:maxBuilds]
+	}
+	if len(toFetch) == 0 {
+		return
+	}
+
+	if p.fetchAndStoreBuildNixNames(ctx, channel, client, toFetch) {
 		_ = p.store.Save()
 	}
 }
@@ -742,12 +1077,14 @@ func (p *Poller) resolveChannelMissingVersions(
 	evals []store.EvaluationRecord,
 	getData func(evalID int64) *store.SystemEvalData,
 	specs []string,
+	forceAll bool,
 ) bool {
 	if client == nil || len(evals) == 0 {
 		return false
 	}
 
-	buildBaseMap := make(map[int64]string)
+	var buildIDs []int64
+	seen := make(map[int64]bool)
 	for _, ev := range evals {
 		data := getData(ev.ID)
 		if data == nil || data.JobsByBase == nil {
@@ -759,29 +1096,36 @@ func (p *Poller) resolveChannelMissingVersions(
 			if len(jobs) <= 1 {
 				continue
 			}
-			allSucceeded := true
-			for _, j := range jobs {
-				if !j.Status.IsSucceeded() {
-					allSucceeded = false
-					break
+			if !forceAll && reqVer == "" {
+				allSucceeded := true
+				for _, j := range jobs {
+					if !j.Status.IsSucceeded() {
+						allSucceeded = false
+						break
+					}
 				}
-			}
-			if reqVer == "" && allSucceeded {
-				continue
+				if allSucceeded {
+					continue
+				}
 			}
 
 			for _, j := range jobs {
-				if j.BuildID <= 0 {
+				if j.BuildID <= 0 || seen[j.BuildID] {
 					continue
 				}
 				if _, ok := p.store.GetChannelBuildNixName(channel, j.BuildID); !ok {
-					buildBaseMap[j.BuildID] = basePkg
+					seen[j.BuildID] = true
+					buildIDs = append(buildIDs, j.BuildID)
 				}
 			}
 		}
 	}
 
-	if len(buildBaseMap) == 0 {
+	return p.fetchAndStoreBuildNixNames(ctx, channel, client, buildIDs)
+}
+
+func (p *Poller) fetchAndStoreBuildNixNames(ctx context.Context, channel string, client *cuirass.Client, buildIDs []int64) bool {
+	if len(buildIDs) == 0 || client == nil {
 		return false
 	}
 
@@ -789,11 +1133,11 @@ func (p *Poller) resolveChannelMissingVersions(
 		id  int64
 		nix string
 	}
-	resCh := make(chan buildResult, len(buildBaseMap))
+	resCh := make(chan buildResult, len(buildIDs))
 	sem := make(chan struct{}, 4)
 	var wg sync.WaitGroup
 
-	for buildID := range buildBaseMap {
+	for _, buildID := range buildIDs {
 		wg.Add(1)
 		go func(id int64) {
 			defer wg.Done()
@@ -825,6 +1169,7 @@ func (p *Poller) resolveChannelMissingVersions(
 
 	if len(newNixes) > 0 {
 		p.store.SetChannelBuildNixNames(channel, newNixes)
+		p.store.PublishSnapshot()
 		return true
 	}
 	return false

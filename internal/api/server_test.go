@@ -172,7 +172,7 @@ func TestDashboardHTML(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, want := range []string{
-		"Guix Pull with All Prebuilts Ready",
+		"Guix Pull Ready",
 		`id="arch-select"`,
 		`<option value="x86_64-linux" selected>x86_64-linux</option>`,
 		`<option value="aarch64-linux">aarch64-linux</option>`,
@@ -229,7 +229,7 @@ func TestDashboardHTML(t *testing.T) {
 	}
 	aarchBody := rec.Body.String()
 	for _, want := range []string{
-		`<a href="/?system=aarch64-linux">Guix Pull with All Prebuilts Ready</a>`,
+		`<a href="/?system=aarch64-linux">Guix Pull Ready</a>`,
 		`<option value="x86_64-linux">x86_64-linux</option>`,
 		`<option value="aarch64-linux" selected>aarch64-linux</option>`,
 		`<span class="badge badge-muted" title="ci.guix.gnu.org does not build the guix jobset for aarch64-linux">Not built</span>`,
@@ -492,9 +492,9 @@ func TestAdditionalChannelsNonguixAPI(t *testing.T) {
 		!strings.Contains(homeHTML, `<th><a href="https://ci.guix.gnu.org/jobset/guix" target="_blank" rel="noopener">guix/guix</a></th>`) ||
 		!strings.Contains(homeHTML, `<th><a href="https://ci.guix.gnu.org/jobset/master" target="_blank" rel="noopener">guix/master</a></th>`) ||
 		!strings.Contains(homeHTML, `<th class="col-nonguix"><a href="https://cuirass.nonguix.org/jobset/nonguix" target="_blank" rel="noopener">nonguix/nonguix</a></th>`) ||
-		!strings.Contains(homeHTML, `https://cuirass.nonguix.org/eval/55`) ||
+		!strings.Contains(homeHTML, `/substitutes/cuirass.nonguix.org/evaluations/55`) ||
 		!strings.Contains(homeHTML, `<strong>#55</strong>`) ||
-		!strings.Contains(homeHTML, `<span class="badge badge-warn" title="Pending jobs: firefox.x86_64-linux">Pending (1)</span>`) ||
+		!strings.Contains(homeHTML, `<a href="/substitutes/cuirass.nonguix.org/evaluations/55?status=pending" class="badge badge-warn" title="Pending jobs: firefox.x86_64-linux">1 Pending</a>`) ||
 		!strings.Contains(homeHTML, `<a href="https://cuirass.nonguix.org/build/1005984/details" target="_blank" rel="noopener" class="mono" title="Pending build #1005984 (firefox.x86_64-linux)">firefox</a>`) ||
 		!strings.Contains(homeHTML, `class="row-latest-ready"`) ||
 		!strings.Contains(homeHTML, `latest-nonguix-badge" style="margin-left:0.35rem;">Latest Ready</span>`) {
@@ -540,5 +540,533 @@ func TestFaviconEndpoint(t *testing.T) {
 	body := rec.Body.String()
 	if !strings.Contains(body, `<link rel="icon" type="image/svg+xml" href="/favicon.ico">`) {
 		t.Fatalf("GET / HTML missing favicon link")
+	}
+}
+
+func TestDashboardUnavailablePackagesAndFailedBadges(t *testing.T) {
+	st, err := store.Open(":memory:", "https://ci.guix.gnu.org", []string{"x86_64-linux"})
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	st.SetChannelServerURL("nonguix", "https://cuirass.nonguix.org")
+
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	st.UpdateChannelEvaluations("guix", []store.EvaluationRecord{
+		{ID: 700, Commit: "aaaa1111bbbb2222cccc3333dddd4444eeee5555", Timestamp: now},
+		{ID: 699, Commit: "ffff6666eeee7777dddd8888cccc9999bbbb0000", Timestamp: now.Add(-time.Hour)},
+	}, 40)
+
+	// Eval 700 has 1 pending build, 1 failed build, and 1 package (omitted-pkg) that won't be in Eval 699
+	st.SetPullStatus("aaaa1111bbbb2222cccc3333dddd4444eeee5555", "x86_64-linux", 1700, true)
+	st.UpsertChannelSystemEval("guix", 700, "aaaa1111bbbb2222cccc3333dddd4444eeee5555", "x86_64-linux", []cuirass.Job{
+		{BuildID: 1, Name: "emacs.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "29.4"},
+		{BuildID: 2, Name: "libreoffice.x86_64-linux", Status: cuirass.StatusScheduled, Version: "24.8"},
+		{BuildID: 3, Name: "ruby-mysql2.x86_64-linux", Status: cuirass.StatusFailed, Version: "0.5.5"},
+		{BuildID: 4, Name: "omitted-pkg.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "1.0"},
+	})
+
+	// Eval 699 (Latest Ready) has 0 pending builds, 2 failed jobs (ruby-mysql2 failed, github-cli failed-dependency),
+	// 1 multi-version package where one version failed (gcc-toolchain@13), and omitted-pkg is not built.
+	st.SetPullStatus("ffff6666eeee7777dddd8888cccc9999bbbb0000", "x86_64-linux", 1699, true)
+	st.UpsertChannelSystemEval("guix", 699, "ffff6666eeee7777dddd8888cccc9999bbbb0000", "x86_64-linux", []cuirass.Job{
+		{BuildID: 10, Name: "emacs.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "29.4"},
+		{BuildID: 15, Name: "libreoffice.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "24.8"},
+		{BuildID: 11, Name: "ruby-mysql2.x86_64-linux", Status: cuirass.StatusFailed, Version: "0.5.5"},
+		{BuildID: 12, Name: "github-cli.x86_64-linux", Status: cuirass.StatusFailedDependency, Version: "2.52.0"},
+		{BuildID: 13, Name: "gcc-toolchain.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "14.2.0"},
+		{BuildID: 14, Name: "gcc-toolchain.x86_64-linux", Status: cuirass.StatusFailed, Version: "13.3.0"},
+	})
+
+	st.UpdateChannelEvaluations("nonguix", []store.EvaluationRecord{
+		{
+			ID:      54,
+			Channel: "nonguix",
+			Commit:  "ng54111122223333444455556666777788889999",
+			Checkouts: map[string]string{
+				"nonguix": "ng54111122223333444455556666777788889999",
+				"guix":    "ffff6666eeee7777dddd8888cccc9999bbbb0000",
+			},
+			Timestamp: now.Add(-time.Hour),
+		},
+	}, 40)
+	st.UpsertChannelSystemEval("nonguix", 54, "ng54111122223333444455556666777788889999", "x86_64-linux", []cuirass.Job{
+		{BuildID: 901, Name: "linux.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "6.12.1"},
+		{BuildID: 902, Name: "nvidia-driver.x86_64-linux", Status: cuirass.StatusFailed, Version: "550.120"},
+	})
+
+	_ = st.Save()
+	srv := NewServer(st, nil, nil)
+
+	// 1. Default dashboard (Guix mode): no unavailable-panel on /, evaluation links point to /substitutes/<server>/evaluations/<id>
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET / status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, unwanted := range []string{
+		`id="unavailable-panel"`,
+		`Unavailable Packages in Latest Ready Commit`,
+		`<script id="unavailable-pkgs-data" type="application/json">`,
+	} {
+		if strings.Contains(body, unwanted) {
+			t.Fatalf("GET / should not contain %q", unwanted)
+		}
+	}
+	for _, want := range []string{
+		`<a href="/substitutes/ci.guix.gnu.org/evaluations/699" class="mono"><strong>#699</strong></a>`,
+		`<a href="/substitutes/ci.guix.gnu.org/evaluations/699?status=succeeded" class="badge badge-ok"`,
+		`<a href="/substitutes/ci.guix.gnu.org/evaluations/700" class="mono"><strong>#700</strong></a>`,
+		`<a href="/substitutes/ci.guix.gnu.org/evaluations/700?status=pending" class="badge badge-warn" title="1 jobs pending in evaluation #700 (click to inspect)">1 Pending</a>`,
+		`<a href="/substitutes/ci.guix.gnu.org/evaluations/699?status=failed" class="badge badge-danger" title="3 jobs failed or had a failed dependency in evaluation #699 (click to inspect)">3 Failed</a>`,
+		`<a href="/substitutes/ci.guix.gnu.org/evaluations/700?status=failed" class="badge badge-danger" title="1 jobs failed or had a failed dependency in evaluation #700 (click to inspect)">1 Failed</a>`,
+		`<a href="/substitutes/cuirass.nonguix.org/evaluations/54" class="mono" title="nonguix commit ng54111122"><strong>#54</strong></a>`,
+		`<a href="/substitutes/cuirass.nonguix.org/evaluations/54?status=succeeded" class="badge badge-ok"`,
+		`<a href="/substitutes/cuirass.nonguix.org/evaluations/54?status=failed" class="badge badge-danger" title="1 nonguix jobs failed in evaluation #54 (click to inspect)">1 Failed</a>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET / missing %q", want)
+		}
+	}
+
+	// 2. GET /substitutes/ci.guix.gnu.org/evaluations/699 shows Guix evaluation overview and all Guix packages (available + unavailable)
+	req = httptest.NewRequest(http.MethodGet, "/substitutes/ci.guix.gnu.org/evaluations/699", nil)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /substitutes/ci.guix.gnu.org/evaluations/699 status = %d, want 200", rec.Code)
+	}
+	evalBody := rec.Body.String()
+	for _, want := range []string{
+		`Evaluation #699`,
+		`<span class="badge badge-muted mono">ci.guix.gnu.org</span>`,
+		`Cuirass #699 &rarr;`,
+		`Packages in Evaluation`,
+		`<a href="/substitutes/ci.guix.gnu.org/evaluations/699?status=succeeded" onclick="return setUnavailableStatusFilter(event, 'succeeded')" class="badge badge-ok">3 Succeeded</a>`,
+		`<a href="/substitutes/ci.guix.gnu.org/evaluations/699?status=failed" onclick="return setUnavailableStatusFilter(event, 'failed')" class="badge badge-danger">3 Failed</a>`,
+		`<a href="/substitutes/ci.guix.gnu.org/evaluations/699?status=pending" onclick="return setUnavailableStatusFilter(event, 'pending')" class="badge badge-warn">0 Pending</a>`,
+		`<a href="/substitutes/ci.guix.gnu.org/evaluations/699?status=not-built" onclick="return setUnavailableStatusFilter(event, 'not-built')" class="badge badge-muted">1 Not built</a>`,
+		`<a id="eval-available-badge" href="/substitutes/ci.guix.gnu.org/evaluations/699?status=succeeded" onclick="return setUnavailableStatusFilter(event, 'succeeded')" class="badge badge-ok">3 available</a>`,
+		`<a id="unavailable-total-badge" href="/substitutes/ci.guix.gnu.org/evaluations/699?status=unavailable" onclick="return setUnavailableStatusFilter(event, 'unavailable')" class="badge badge-danger">4 unavailable</a>`,
+		`Total: 7 packages (3 available, 4 unavailable)`,
+		`<span id="unavailable-eval-meta" class="mono" style="font-size:0.8rem;color:var(--muted);">guix #699 (ffff6666ee)</span>`,
+		`<a href="/substitutes/cuirass.nonguix.org/evaluations/54" class="mono" title="nonguix commit ng54111122"><strong>#54</strong></a>`,
+		`<a href="/packages/emacs">emacs</a>`,
+		`<a href="/packages/libreoffice">libreoffice</a>`,
+		`<a href="/packages/gcc-toolchain">gcc-toolchain</a> <span class="badge badge-muted" style="margin-left:0.35rem;">2 builds</span>`,
+		`@14.2.0`,
+		`@13.3.0`,
+		`<a href="/packages/github-cli">github-cli</a>`,
+		`<a href="/packages/ruby-mysql2">ruby-mysql2</a>`,
+		`<a href="/packages/omitted-pkg">omitted-pkg</a>`,
+		`Build #13 &rarr;`,
+		`Build #14 &rarr;`,
+		`<span class="badge badge-ok">Succeeded</span>`,
+		`<span class="badge badge-warn">Failed (dependency)</span>`,
+		`<span class="badge badge-danger">Failed</span>`,
+		`<span class="badge badge-muted">Not built</span>`,
+		`id="eval-pagination-wrap"`,
+		`Showing 1-6 of 6`,
+		`id="eval-page-input"`,
+		`<script id="unavailable-pkgs-data" type="application/json">`,
+		`"succeeded":["emacs","libreoffice"]`,
+	} {
+		if !strings.Contains(evalBody, want) {
+			t.Fatalf("GET /substitutes/ci.guix.gnu.org/evaluations/699 missing %q", want)
+		}
+	}
+
+	// 3. GET /substitutes/cuirass.nonguix.org/evaluations/54 shows Nonguix evaluation #54 scoped to cuirass.nonguix.org
+	req = httptest.NewRequest(http.MethodGet, "/substitutes/cuirass.nonguix.org/evaluations/54", nil)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /substitutes/cuirass.nonguix.org/evaluations/54 status = %d, want 200", rec.Code)
+	}
+	ngEvalBody := rec.Body.String()
+	for _, want := range []string{
+		`Evaluation #54`,
+		`<span class="badge badge-muted mono">cuirass.nonguix.org</span>`,
+		`https://cuirass.nonguix.org/eval/54`,
+		`<a href="/substitutes/cuirass.nonguix.org/evaluations/54?status=succeeded" onclick="return setUnavailableStatusFilter(event, 'succeeded')" class="badge badge-ok">1 Succeeded</a>`,
+		`<a href="/substitutes/cuirass.nonguix.org/evaluations/54?status=failed" onclick="return setUnavailableStatusFilter(event, 'failed')" class="badge badge-danger">1 Failed</a>`,
+		`<a id="eval-available-badge" href="/substitutes/cuirass.nonguix.org/evaluations/54?status=succeeded" onclick="return setUnavailableStatusFilter(event, 'succeeded')" class="badge badge-ok">1 available</a>`,
+		`<a id="unavailable-total-badge" href="/substitutes/cuirass.nonguix.org/evaluations/54?status=unavailable" onclick="return setUnavailableStatusFilter(event, 'unavailable')" class="badge badge-danger">1 unavailable</a>`,
+		`Total: 2 packages (1 available, 1 unavailable)`,
+		`<span id="unavailable-eval-meta" class="mono" style="font-size:0.8rem;color:var(--muted);">nonguix #54 (ng54111122)</span>`,
+		`<a href="/substitutes/ci.guix.gnu.org/evaluations/699" class="mono"><strong>#699</strong></a>`,
+		`<a href="/packages/linux?additional_channels=nonguix">linux</a>`,
+		`<a href="/packages/nvidia-driver?additional_channels=nonguix">nvidia-driver</a>`,
+		`Showing 1-2 of 2`,
+		`"nonguix_succeeded":["linux"]`,
+	} {
+		if !strings.Contains(ngEvalBody, want) {
+			t.Fatalf("GET /substitutes/cuirass.nonguix.org/evaluations/54 missing %q", want)
+		}
+	}
+
+	// 4. GET /substitutes/ci.guix.gnu.org/evaluations/999999 and unknown substitute server return 404 Not Found
+	req = httptest.NewRequest(http.MethodGet, "/substitutes/ci.guix.gnu.org/evaluations/999999", nil)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET /substitutes/ci.guix.gnu.org/evaluations/999999 status = %d, want 404", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "Not Found in Cache") {
+		t.Fatalf("GET /substitutes/ci.guix.gnu.org/evaluations/999999 missing 'Not Found in Cache'")
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/substitutes/unknown.example.org/evaluations/699", nil)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET /substitutes/unknown.example.org/evaluations/699 status = %d, want 404", rec.Code)
+	}
+}
+
+func TestPackageStatusPage(t *testing.T) {
+	st, err := store.Open(":memory:", "https://ci.guix.gnu.org", []string{"x86_64-linux"})
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	st.SetChannelServerURL("nonguix", "https://cuirass.nonguix.org")
+
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	st.UpdateChannelEvaluations("guix", []store.EvaluationRecord{
+		{ID: 700, Commit: "aaaa1111bbbb2222cccc3333dddd4444eeee5555", Timestamp: now},
+		{ID: 699, Commit: "ffff6666eeee7777dddd8888cccc9999bbbb0000", Timestamp: now.Add(-time.Hour)},
+		{ID: 698, Commit: "1111222233334444555566667777888899990000", Timestamp: now.Add(-2 * time.Hour)},
+	}, 40)
+
+	// Eval 700: 1 pending build (libreoffice), github-cli failed-dependency
+	st.SetPullStatus("aaaa1111bbbb2222cccc3333dddd4444eeee5555", "x86_64-linux", 1700, true)
+	st.UpsertChannelSystemEval("guix", 700, "aaaa1111bbbb2222cccc3333dddd4444eeee5555", "x86_64-linux", []cuirass.Job{
+		{BuildID: 1, Name: "emacs.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "29.4"},
+		{BuildID: 2, Name: "libreoffice.x86_64-linux", Status: cuirass.StatusScheduled, Version: "24.8"},
+		{BuildID: 3, Name: "github-cli.x86_64-linux", Status: cuirass.StatusFailedDependency, Version: "2.52.0"},
+	})
+
+	// Eval 699 (Latest Ready): 0 pending builds, github-cli failed-dependency, gcc-toolchain@14 succeeded, gcc-toolchain@13 failed
+	st.SetPullStatus("ffff6666eeee7777dddd8888cccc9999bbbb0000", "x86_64-linux", 1699, true)
+	st.UpsertChannelSystemEval("guix", 699, "ffff6666eeee7777dddd8888cccc9999bbbb0000", "x86_64-linux", []cuirass.Job{
+		{BuildID: 10, Name: "emacs.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "29.4"},
+		{BuildID: 11, Name: "libreoffice.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "24.8"},
+		{BuildID: 12, Name: "github-cli.x86_64-linux", Status: cuirass.StatusFailedDependency, Version: "2.52.0"},
+		{BuildID: 13, Name: "gcc-toolchain.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "14.2.0"},
+		{BuildID: 14, Name: "gcc-toolchain.x86_64-linux", Status: cuirass.StatusFailed, Version: "13.3.0"},
+	})
+
+	// Eval 698: github-cli succeeded!
+	st.SetPullStatus("1111222233334444555566667777888899990000", "x86_64-linux", 1698, true)
+	st.UpsertChannelSystemEval("guix", 698, "1111222233334444555566667777888899990000", "x86_64-linux", []cuirass.Job{
+		{BuildID: 20, Name: "emacs.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "29.4"},
+		{BuildID: 21, Name: "github-cli.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "2.52.0"},
+	})
+
+	st.UpdateChannelEvaluations("nonguix", []store.EvaluationRecord{
+		{
+			ID:      54,
+			Channel: "nonguix",
+			Commit:  "ng54111122223333444455556666777788889999",
+			Checkouts: map[string]string{
+				"nonguix": "ng54111122223333444455556666777788889999",
+				"guix":    "ffff6666eeee7777dddd8888cccc9999bbbb0000",
+			},
+			Timestamp: now.Add(-time.Hour),
+		},
+	}, 40)
+	st.UpsertChannelSystemEval("nonguix", 54, "ng54111122223333444455556666777788889999", "x86_64-linux", []cuirass.Job{
+		{BuildID: 901, Name: "linux.x86_64-linux", Status: cuirass.StatusSucceeded, Version: "6.12.1"},
+		{BuildID: 902, Name: "nvidia-driver.x86_64-linux", Status: cuirass.StatusFailed, Version: "550.120"},
+	})
+
+	_ = st.Save()
+	srv := NewServer(st, nil, nil)
+
+	// 1. GET /packages/github-cli -> shows Failed (dependency) in Latest Ready (#699) and Newest Ready in #698
+	req := httptest.NewRequest(http.MethodGet, "/packages/github-cli", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /packages/github-cli status = %d, want 200", rec.Code)
+	}
+	ghBody := rec.Body.String()
+	for _, want := range []string{
+		"github-cli - Package Substitute Status",
+		"Status in Latest Ready Commit",
+		`<span class="badge badge-warn">Failed (dependency)</span>`,
+		`Newest Ready Commit for <code>github-cli</code>`,
+		`guix time-machine --commit=1111222233334444555566667777888899990000 -- install github-cli`,
+		`Newest Pkg Ready`,
+		`<strong>1</strong> Succeeded &middot; <strong>2</strong> Failed`,
+		`class="health-strip"`,
+	} {
+		if !strings.Contains(ghBody, want) {
+			t.Fatalf("GET /packages/github-cli missing %q", want)
+		}
+	}
+
+	// 2. GET /packages/gcc-toolchain -> multi-version package shows both @14.2.0 and @13.3.0
+	req = httptest.NewRequest(http.MethodGet, "/packages/gcc-toolchain", nil)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /packages/gcc-toolchain status = %d, want 200", rec.Code)
+	}
+	gccBody := rec.Body.String()
+	for _, want := range []string{
+		`@14.2.0`,
+		`@13.3.0`,
+		`Build #13 &rarr;`,
+	} {
+		if !strings.Contains(gccBody, want) {
+			t.Fatalf("GET /packages/gcc-toolchain missing %q", want)
+		}
+	}
+
+	// 3. GET /packages/nvidia-driver -> auto-detects nonguix channel
+	req = httptest.NewRequest(http.MethodGet, "/packages/nvidia-driver", nil)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /packages/nvidia-driver status = %d, want 200", rec.Code)
+	}
+	nvBody := rec.Body.String()
+	for _, want := range []string{
+		`<span class="badge badge-muted mono">nonguix</span>`,
+		`id="main-nonguix-toggle" checked`,
+		`/substitutes/cuirass.nonguix.org/evaluations/54`,
+	} {
+		if !strings.Contains(nvBody, want) {
+			t.Fatalf("GET /packages/nvidia-driver missing %q", want)
+		}
+	}
+
+	// 4. GET /packages/unknown-local-pkg -> returns 404 Not Found with helpful HTML
+	req = httptest.NewRequest(http.MethodGet, "/packages/unknown-local-pkg", nil)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET /packages/unknown-local-pkg status = %d, want 404", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "Not Tracked on CI") {
+		t.Fatalf("GET /packages/unknown-local-pkg missing 'Not Tracked on CI' message")
+	}
+}
+
+func TestStuckBuildDashboardAndDetailPages(t *testing.T) {
+	st, err := store.Open(":memory:", "https://ci.guix.gnu.org", []string{"x86_64-linux"})
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	now := time.Date(2026, 11, 14, 15, 0, 0, 0, time.UTC)
+	st.UpdateChannelEvaluations("guix", []store.EvaluationRecord{
+		{ID: 800, Commit: "8008008008008008008008008008008008008008", Timestamp: now},
+		{ID: 799, Commit: "7997997997997997997997997997997997997997", Timestamp: now.Add(-time.Hour)},
+	}, 40)
+	st.SetPullStatus("8008008008008008008008008008008008008008", "x86_64-linux", 1800, true)
+	st.SetPullStatus("7997997997997997997997997997997997997997", "x86_64-linux", 1799, true)
+
+	st.UpsertChannelSystemEval("guix", 800, "8008008008008008008008008008008008008008", "x86_64-linux", []cuirass.Job{
+		{BuildID: 1, Name: "emacs.x86_64-linux", Status: cuirass.StatusSucceeded},
+		{BuildID: 26974197, Name: "ath9k-htc-ar7010-firmware.x86_64-linux", Status: cuirass.StatusStuck},
+	})
+	st.UpsertChannelSystemEval("guix", 799, "7997997997997997997997997997997997997997", "x86_64-linux", []cuirass.Job{
+		{BuildID: 2, Name: "emacs.x86_64-linux", Status: cuirass.StatusSucceeded},
+		{BuildID: 3, Name: "ath9k-htc-ar7010-firmware.x86_64-linux", Status: cuirass.StatusSucceeded},
+	})
+	_ = st.Save()
+
+	srv := NewServer(st, nil, nil)
+
+	// 1. Main dashboard ("/") marks eval #800 as Ready / Latest Ready and hides Stuck badge in the main table.
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET / status = %d, want 200", rec.Code)
+	}
+	dashBody := rec.Body.String()
+	if !strings.Contains(dashBody, "8008008008") || !strings.Contains(dashBody, "Latest Ready") {
+		t.Fatalf("GET / expected eval #800 to be Latest Ready")
+	}
+	if strings.Contains(dashBody, "1 Stuck") {
+		t.Fatalf("GET / should not display Stuck count badge in main evaluations table")
+	}
+
+	// 2. Evaluation detail page shows 1 Stuck badge, Stuck filter option, Stuck status badge, and Build #26974197 link.
+	req = httptest.NewRequest(http.MethodGet, "/substitutes/ci.guix.gnu.org/evaluations/800", nil)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET evaluation 800 status = %d, want 200", rec.Code)
+	}
+	evalBody := rec.Body.String()
+	for _, want := range []string{
+		`<a href="/substitutes/ci.guix.gnu.org/evaluations/800?status=succeeded" onclick="return setUnavailableStatusFilter(event, 'succeeded')" class="badge badge-ok">Ready</a>`,
+		`<a href="/substitutes/ci.guix.gnu.org/evaluations/800?status=stuck" onclick="return setUnavailableStatusFilter(event, 'stuck')" class="badge badge-warn">1 Stuck</a>`,
+		`<option value="stuck">Stuck</option>`,
+		`<span class="badge badge-warn">Stuck</span>`,
+		`Build #26974197 &rarr;`,
+	} {
+		if !strings.Contains(evalBody, want) {
+			t.Fatalf("GET evaluation 800 missing %q", want)
+		}
+	}
+
+	// 3. Package detail page shows Stuck in Latest Ready (#800), Build #26974197 link, health summary, and fallback to #799.
+	req = httptest.NewRequest(http.MethodGet, "/packages/ath9k-htc-ar7010-firmware", nil)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET package status = %d, want 200", rec.Code)
+	}
+	pkgBody := rec.Body.String()
+	for _, want := range []string{
+		`<span class="badge badge-warn">Stuck</span>`,
+		`<strong>1</strong> Succeeded &middot; <strong>0</strong> Failed &middot; <strong>0</strong> Pending &middot; <strong>1</strong> Stuck &middot; <strong>0</strong> Not built`,
+		`Build #26974197 &rarr;`,
+		`guix time-machine --commit=7997997997997997997997997997997997997997 -- install ath9k-htc-ar7010-firmware`,
+	} {
+		if !strings.Contains(pkgBody, want) {
+			t.Fatalf("GET /packages/ath9k-htc-ar7010-firmware missing %q", want)
+		}
+	}
+}
+
+func TestGuixJobsetEvaluationPageAndLinks(t *testing.T) {
+	st, err := store.Open(":memory:", "https://ci.guix.gnu.org", []string{"x86_64-linux"})
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	now := time.Date(2026, 11, 14, 16, 0, 0, 0, time.UTC)
+	commit801 := "8018018018018018018018018018018018018018"
+	commit800 := "8008008008008008008008008008008008008008"
+
+	st.UpdateChannelEvaluations("guix", []store.EvaluationRecord{
+		{ID: 801, Commit: commit801, Timestamp: now},
+		{ID: 800, Commit: commit800, Timestamp: now.Add(-time.Hour)},
+	}, 40)
+	st.UpdateChannelEvaluations(store.GuixJobsetChannel, []store.EvaluationRecord{
+		{ID: 1801, Commit: commit801, Timestamp: now},
+		{ID: 1800, Commit: commit800, Timestamp: now.Add(-time.Hour)},
+	}, 40)
+
+	st.SetPullStatus(commit801, "x86_64-linux", 1801, false)
+	st.SetPullStatus(commit800, "x86_64-linux", 1800, true)
+
+	st.UpsertChannelSystemEval("guix", 801, commit801, "x86_64-linux", []cuirass.Job{
+		{BuildID: 10, Name: "emacs.x86_64-linux", Status: cuirass.StatusSucceeded},
+		{BuildID: 11, Name: "guix.x86_64-linux", Status: cuirass.StatusSucceeded},
+	})
+	st.UpsertChannelSystemEval("guix", 800, commit800, "x86_64-linux", []cuirass.Job{
+		{BuildID: 20, Name: "emacs.x86_64-linux", Status: cuirass.StatusSucceeded},
+		{BuildID: 21, Name: "guix.x86_64-linux", Status: cuirass.StatusSucceeded},
+	})
+	st.UpsertChannelSystemEval(store.GuixJobsetChannel, 1801, commit801, "x86_64-linux", []cuirass.Job{
+		{BuildID: 2801, Name: "guix.x86_64-linux", Status: cuirass.StatusScheduled},
+	})
+	st.UpsertChannelSystemEval(store.GuixJobsetChannel, 1800, commit800, "x86_64-linux", []cuirass.Job{
+		{BuildID: 2800, Name: "guix.x86_64-linux", Status: cuirass.StatusSucceeded},
+	})
+	_ = st.Save()
+
+	srv := NewServer(st, nil, nil)
+
+	// 1. Main dashboard ("/") links guix/guix evaluations to /substitutes/ci.guix.gnu.org/evaluations/<id> rather than upstream /eval/<id>.
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET / status = %d, want 200", rec.Code)
+	}
+	dashBody := rec.Body.String()
+	for _, want := range []string{
+		`<a href="/substitutes/ci.guix.gnu.org/evaluations/1801" class="mono"><strong>#1801</strong></a>`,
+		`href="/substitutes/ci.guix.gnu.org/evaluations/1801?status=pending"`,
+		`>1 Pending</a>`,
+		`<a href="/substitutes/ci.guix.gnu.org/evaluations/1800" class="mono"><strong>#1800</strong></a>`,
+		`href="/substitutes/ci.guix.gnu.org/evaluations/1800?status=succeeded"`,
+	} {
+		if !strings.Contains(dashBody, want) {
+			t.Fatalf("GET / missing %q", want)
+		}
+	}
+	if strings.Contains(dashBody, "https://ci.guix.gnu.org/eval/1800") || strings.Contains(dashBody, "https://ci.guix.gnu.org/eval/1801") {
+		t.Fatalf("GET / should not link guix/guix evaluations directly to upstream Cuirass /eval/<id>")
+	}
+
+	// 2. Package detail page ("/packages/emacs") and guix/master evaluation page ("/substitutes/.../800") also link guix/guix locally.
+	req = httptest.NewRequest(http.MethodGet, "/packages/emacs", nil)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /packages/emacs status = %d, want 200", rec.Code)
+	}
+	pkgBody := rec.Body.String()
+	if !strings.Contains(pkgBody, `<a href="/substitutes/ci.guix.gnu.org/evaluations/1800" class="mono"><strong>#1800</strong></a>`) {
+		t.Fatalf("GET /packages/emacs missing local link to guix/guix evaluation #1800")
+	}
+	if strings.Contains(pkgBody, "https://ci.guix.gnu.org/eval/1800") {
+		t.Fatalf("GET /packages/emacs should not link guix/guix evaluation #1800 to upstream Cuirass")
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/substitutes/ci.guix.gnu.org/evaluations/800", nil)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET evaluation 800 status = %d, want 200", rec.Code)
+	}
+	masterEvalBody := rec.Body.String()
+	if !strings.Contains(masterEvalBody, `<a href="/substitutes/ci.guix.gnu.org/evaluations/1800" class="mono"><strong>#1800</strong></a>`) {
+		t.Fatalf("GET evaluation 800 missing local link to guix/guix evaluation #1800")
+	}
+	if strings.Contains(masterEvalBody, "https://ci.guix.gnu.org/eval/1800") {
+		t.Fatalf("GET evaluation 800 should not link guix/guix evaluation #1800 to upstream Cuirass")
+	}
+
+	// 3. GET /substitutes/ci.guix.gnu.org/evaluations/1800 renders the guix/guix evaluation details page.
+	req = httptest.NewRequest(http.MethodGet, "/substitutes/ci.guix.gnu.org/evaluations/1800", nil)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET evaluation 1800 status = %d, want 200", rec.Code)
+	}
+	pullReadyBody := rec.Body.String()
+	for _, want := range []string{
+		`Evaluation #1800`,
+		`<span class="badge badge-ok">Latest Ready</span>`,
+		`<span class="badge badge-muted mono">guix/guix</span>`,
+		`guix/guix Job Breakdown`,
+		`Paired guix/master Evaluation`,
+		`<a href="/substitutes/ci.guix.gnu.org/evaluations/800" class="mono"><strong>#800</strong></a>`,
+		`guix/guix #1800 (8008008008)`,
+		`<a href="/packages/guix">guix</a>`,
+		`https://ci.guix.gnu.org/eval/1800`,
+		`Cuirass #1800 &rarr;`,
+	} {
+		if !strings.Contains(pullReadyBody, want) {
+			t.Fatalf("GET evaluation 1800 missing %q", want)
+		}
+	}
+
+	// 4. GET /substitutes/ci.guix.gnu.org/evaluations/1801 renders pending guix/guix evaluation with build link.
+	req = httptest.NewRequest(http.MethodGet, "/substitutes/ci.guix.gnu.org/evaluations/1801", nil)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET evaluation 1801 status = %d, want 200", rec.Code)
+	}
+	pullPendingBody := rec.Body.String()
+	for _, want := range []string{
+		`Evaluation #1801`,
+		`1 Pending`,
+		`Build #2801 &rarr;`,
+		`<a href="/substitutes/ci.guix.gnu.org/evaluations/801" class="mono"><strong>#801</strong></a>`,
+	} {
+		if !strings.Contains(pullPendingBody, want) {
+			t.Fatalf("GET evaluation 1801 missing %q", want)
+		}
 	}
 }

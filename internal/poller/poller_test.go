@@ -337,6 +337,14 @@ func TestPollerGuixPullReadyRefreshedForCompletedMasterEval(t *testing.T) {
 	if data2 == nil || !data2.PullReady {
 		t.Fatalf("expected data2 to have PullReady=true in cycle 2, got %+v", data2)
 	}
+	pullData2 := snap2.ByChannelEvalSystem[store.ChannelEvalSystemKey{
+		Channel: store.GuixJobsetChannel,
+		EvalID:  1700,
+		System:  "x86_64-linux",
+	}]
+	if pullData2 == nil || pullData2.SucceededJobs != 1 || pullData2.PendingJobs != 0 || !pullData2.Complete {
+		t.Fatalf("expected guix/guix evaluation 1700 to be stored and complete in cycle 2, got %+v", pullData2)
+	}
 
 	cachedPull, ok := st.GetPullStatus("commit700", "x86_64-linux")
 	if !ok || !cachedPull.Ready {
@@ -700,6 +708,104 @@ func TestPollerIncrementalBatchReconciliation(t *testing.T) {
 	}
 	if evalCalls.Load() != 2 {
 		t.Fatalf("expected exactly 2 calls to eval 700, got %d", evalCalls.Load())
+	}
+}
+
+func TestPollerStuckBuildLifecycle(t *testing.T) {
+	var evalJobsCalls atomic.Int32
+	var buildFinished atomic.Bool
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/api/evaluations" && r.URL.Query().Get("spec") == "master":
+			_, _ = w.Write([]byte(`[{"id":800,"timestamp":1729180000,"checkouts":[{"commit":"8008008008008008008008008008008008008008","channel":"guix"}]}]`))
+		case r.URL.Path == "/api/evaluations" && r.URL.Query().Get("spec") == "guix":
+			_, _ = w.Write([]byte(`[{"id":1800,"timestamp":1729180000,"checkouts":[{"commit":"8008008008008008008008008008008008008008","channel":"guix"}]}]`))
+		case r.URL.Path == "/api/jobs" && r.URL.Query().Get("evaluation") == "1800":
+			_, _ = w.Write([]byte(`[{"build":9001,"status":0,"name":"guix.x86_64-linux"}]`))
+		case r.URL.Path == "/api/jobs" && r.URL.Query().Get("evaluation") == "800":
+			evalJobsCalls.Add(1)
+			_, _ = w.Write([]byte(`[
+				{"build":8001,"status":0,"name":"emacs.x86_64-linux"},
+				{"build":26974197,"status":-1,"name":"ath9k-htc-ar7010-firmware.x86_64-linux"}
+			]`))
+		case r.URL.Path == "/build/26974197":
+			if buildFinished.Load() {
+				_, _ = w.Write([]byte(`{
+					"id":26974197,
+					"nixname":"ath9k-htc-ar7010-firmware-1.4.0",
+					"derivation":"/gnu/store/aaaa-ath9k-htc-ar7010-firmware-1.4.0.drv",
+					"finished":1,
+					"buildstatus":0,
+					"stoptime":1794496000,
+					"weather":0
+				}`))
+			} else {
+				_, _ = w.Write([]byte(`{
+					"id":26974197,
+					"nixname":"ath9k-htc-ar7010-firmware-1.4.0",
+					"derivation":"/gnu/store/aaaa-ath9k-htc-ar7010-firmware-1.4.0.drv",
+					"finished":0,
+					"buildstatus":-1,
+					"stoptime":1794495378,
+					"weather":3
+				}`))
+			}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	client := cuirass.NewClient(srv.URL)
+	st, err := store.Open(":memory:", srv.URL, []string{"x86_64-linux"})
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+
+	p := New(client, st, Config{
+		Systems:             []string{"x86_64-linux"},
+		Limit:               10,
+		PollInterval:        time.Minute,
+		MaxReconcilePending: 10,
+	})
+
+	ctx := context.Background()
+
+	// Pass 1: rescheduled failing build is classified as StatusStuck, so PendingJobs == 0 and Complete == true.
+	if err := p.SyncOnce(ctx); err != nil {
+		t.Fatalf("pass 1 SyncOnce: %v", err)
+	}
+	snap := st.Snapshot()
+	data := snap.ByEvalSystem[store.EvalSystemKey{EvalID: 800, System: "x86_64-linux"}]
+	if data == nil {
+		t.Fatalf("missing eval 800 data")
+	}
+	if data.PendingJobs != 0 || data.StuckJobs != 1 || data.SucceededJobs != 1 || !data.Complete {
+		t.Fatalf("unexpected counts after pass 1: pending=%d stuck=%d succeeded=%d complete=%v",
+			data.PendingJobs, data.StuckJobs, data.SucceededJobs, data.Complete)
+	}
+	if stPkg, ok := snap.LookupSingleJob(data, "ath9k-htc-ar7010-firmware"); !ok || stPkg != cuirass.StatusStuck {
+		t.Fatalf("expected ath9k-htc-ar7010-firmware to be StatusStuck, got %v (ok=%v)", stPkg, ok)
+	}
+
+	// Pass 2: build finishes upstream; completed evaluation updates via /build/<id> without re-fetching /api/jobs!
+	buildFinished.Store(true)
+	if err := p.SyncOnce(ctx); err != nil {
+		t.Fatalf("pass 2 SyncOnce: %v", err)
+	}
+	if evalJobsCalls.Load() != 1 {
+		t.Fatalf("expected /api/jobs for eval 800 to be called only once, got %d", evalJobsCalls.Load())
+	}
+	snap = st.Snapshot()
+	data = snap.ByEvalSystem[store.EvalSystemKey{EvalID: 800, System: "x86_64-linux"}]
+	if data.StuckJobs != 0 || data.SucceededJobs != 2 || len(data.StuckBuilds) != 0 {
+		t.Fatalf("expected stuck build to resolve to succeeded: stuck=%d succeeded=%d stuckBuilds=%v",
+			data.StuckJobs, data.SucceededJobs, data.StuckBuilds)
+	}
+	if stPkg, ok := snap.LookupSingleJob(data, "ath9k-htc-ar7010-firmware"); !ok || stPkg != cuirass.StatusSucceeded {
+		t.Fatalf("expected ath9k-htc-ar7010-firmware to be StatusSucceeded, got %v (ok=%v)", stPkg, ok)
 	}
 }
 

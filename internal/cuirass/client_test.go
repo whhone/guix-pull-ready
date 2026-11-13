@@ -126,4 +126,50 @@ func TestBuildFinishedAndStatus(t *testing.T) {
 	if bBuilding.Status() != StatusStarted {
 		t.Errorf("expected StatusStarted, got %v", bBuilding.Status())
 	}
+	if bBuilding.IsStuckPending() {
+		t.Errorf("expected fresh pending build IsStuckPending() == false")
+	}
+}
+
+func TestBuildIsStuckPending(t *testing.T) {
+	if !StatusStuck.IsStuck() || StatusStuck.IsPending() || StatusStuck.IsFailed() || StatusStuck.IsSucceeded() {
+		t.Fatalf("unexpected StatusStuck predicates")
+	}
+	if StatusStuck.String() != "stuck" {
+		t.Fatalf("StatusStuck.String() = %q, want stuck", StatusStuck.String())
+	}
+
+	bRescheduled := Build{
+		ID:          26974197,
+		NixName:     "ath9k-htc-ar7010-firmware-1.4.0",
+		Finished:    0,
+		BuildStatus: -1,
+		StopTime:    1794495378,
+		Weather:     WeatherStillFailing,
+	}
+	if !bRescheduled.IsStuckPending() {
+		t.Fatalf("expected rescheduled failing build to be stuck pending")
+	}
+
+	bNewPending := Build{
+		ID:          26974198,
+		Finished:    0,
+		BuildStatus: -3,
+		StopTime:    0,
+		Weather:     WeatherUnknown,
+	}
+	if bNewPending.IsStuckPending() {
+		t.Fatalf("expected fresh scheduled build not to be stuck pending")
+	}
+
+	bFinishedFailure := Build{
+		ID:          26974199,
+		Finished:    1,
+		BuildStatus: 1,
+		StopTime:    1794495378,
+		Weather:     WeatherStillFailing,
+	}
+	if bFinishedFailure.IsStuckPending() {
+		t.Fatalf("expected finished failed build not to be stuck pending")
+	}
 }

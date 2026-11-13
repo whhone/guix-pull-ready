@@ -68,7 +68,8 @@ func DefaultChannelServerURL(channel string) string {
 }
 
 // JobStatus represents the build status of a Cuirass job.
-// Status codes match (guix ci) integer->build-status in GNU Guix:
+// Status codes match (guix ci) integer->build-status in GNU Guix, plus StatusStuck
+// for builds rescheduled by Cuirass after a previous failure:
 //
 //	-3: scheduled
 //	-2: submitted
@@ -78,6 +79,7 @@ func DefaultChannelServerURL(channel string) string {
 //	 2: failed-dependency
 //	 3: failed-other
 //	 4: canceled
+//	 5: stuck (pending build that previously failed and was rescheduled)
 type JobStatus int
 
 const (
@@ -89,11 +91,17 @@ const (
 	StatusFailedDependency JobStatus = 2
 	StatusFailedOther      JobStatus = 3
 	StatusCanceled         JobStatus = 4
+	StatusStuck            JobStatus = 5
 )
 
 // IsPending reports whether the job has not yet finished building.
 func (s JobStatus) IsPending() bool {
 	return s == StatusScheduled || s == StatusSubmitted || s == StatusStarted
+}
+
+// IsStuck reports whether the job is stuck in a rescheduled pending loop after a prior failure.
+func (s JobStatus) IsStuck() bool {
+	return s == StatusStuck
 }
 
 // IsSucceeded reports whether the job finished successfully and its substitute is built.
@@ -124,6 +132,8 @@ func (s JobStatus) String() string {
 		return "failed-other"
 	case StatusCanceled:
 		return "canceled"
+	case StatusStuck:
+		return "stuck"
 	default:
 		return fmt.Sprintf("unknown(%d)", int(s))
 	}
@@ -209,6 +219,15 @@ type Job struct {
 	Version string `json:"version,omitempty"`
 }
 
+// Cuirass build weather values matching (cuirass database) build-weather.
+const (
+	WeatherUnknown         = -1
+	WeatherNewSuccess      = 0
+	WeatherNewFailure      = 1
+	WeatherStillSucceeding = 2
+	WeatherStillFailing    = 3
+)
+
 // Build represents build details returned by /build/<id>.
 type Build struct {
 	ID          int64  `json:"id"`
@@ -216,6 +235,8 @@ type Build struct {
 	Derivation  string `json:"derivation"`
 	Finished    int    `json:"finished"`
 	BuildStatus int    `json:"buildstatus"`
+	StopTime    int64  `json:"stoptime"`
+	Weather     int    `json:"weather"`
 }
 
 // IsFinished reports whether the build has completed building.
@@ -226,6 +247,13 @@ func (b Build) IsFinished() bool {
 // Status returns the JobStatus corresponding to the build's buildstatus.
 func (b Build) Status() JobStatus {
 	return JobStatus(b.BuildStatus)
+}
+
+// IsStuckPending reports whether the build is currently pending (unfinished with a
+// pending buildstatus) after having previously failed and been rescheduled by Cuirass.
+func (b Build) IsStuckPending() bool {
+	return !b.IsFinished() && b.Status().IsPending() &&
+		(b.StopTime > 0 || b.Weather == WeatherNewFailure || b.Weather == WeatherStillFailing)
 }
 
 // ResolvedNixName returns the "<name>-<version>" string extracted from the store

@@ -526,7 +526,7 @@ func evaluateSpecStatus(snap *store.Snapshot, spec string, targetSystem string, 
 		if st.IsPending() {
 			return specStatusPending
 		}
-		if st.IsFailed() {
+		if st.IsFailed() || st.IsStuck() {
 			if allowFailed {
 				return specStatusSucceeded
 			}
@@ -546,7 +546,7 @@ func classifySpecJobs(matched []cuirass.Job, allowFailed bool) specStatus {
 	for _, j := range matched {
 		if j.Status.IsPending() {
 			hasPending = true
-		} else if j.Status.IsFailed() {
+		} else if j.Status.IsFailed() || j.Status.IsStuck() {
 			hasFailed = true
 		}
 	}

@@ -261,3 +261,64 @@ func TestResolveWithNonguixChannel(t *testing.T) {
 		t.Fatalf("FormatChannelsSCM missing expected nonguix + guix channel definitions:\n%s", scm)
 	}
 }
+
+func TestResolveStuckBuildBehavior(t *testing.T) {
+	st, err := store.Open(":memory:", "https://ci.guix.gnu.org", []string{"x86_64-linux"})
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	now := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+	st.UpdateChannelEvaluations("guix", []store.EvaluationRecord{
+		{ID: 800, Commit: "commit800newest00000000000000000000000000", Timestamp: now},
+		{ID: 799, Commit: "commit799older000000000000000000000000000", Timestamp: now.Add(-time.Hour)},
+	}, 40)
+	st.SetPullStatus("commit800newest00000000000000000000000000", "x86_64-linux", 1800, true)
+	st.SetPullStatus("commit799older000000000000000000000000000", "x86_64-linux", 1799, true)
+
+	// Eval 800 has 0 pending jobs and 1 stuck job.
+	st.UpsertChannelSystemEval("guix", 800, "commit800newest00000000000000000000000000", "x86_64-linux", []cuirass.Job{
+		{BuildID: 1, Name: "emacs.x86_64-linux", Status: cuirass.StatusSucceeded},
+		{BuildID: 26974197, Name: "ath9k-htc-ar7010-firmware.x86_64-linux", Status: cuirass.StatusStuck},
+	})
+	// Eval 799 has ath9k-htc-ar7010-firmware succeeded.
+	st.UpsertChannelSystemEval("guix", 799, "commit799older000000000000000000000000000", "x86_64-linux", []cuirass.Job{
+		{BuildID: 2, Name: "emacs.x86_64-linux", Status: cuirass.StatusSucceeded},
+		{BuildID: 3, Name: "ath9k-htc-ar7010-firmware.x86_64-linux", Status: cuirass.StatusSucceeded},
+	})
+	st.PublishSnapshot()
+	snap := st.Snapshot()
+
+	// 1. Whole-evaluation mode (MaxPending=0) is NOT blocked by StatusStuck -> picks Eval 800!
+	resWhole, err := Resolve(snap, Query{System: "x86_64-linux", MaxPending: 0})
+	if err != nil {
+		t.Fatalf("Resolve whole-eval failed: %v", err)
+	}
+	if resWhole.EvaluationID != 800 {
+		t.Fatalf("expected whole-eval to select 800 despite stuck job, got %d", resWhole.EvaluationID)
+	}
+
+	// 2. Package mode explicitly requesting the stuck package falls back to Eval 799 where its substitute exists.
+	resPkg, err := Resolve(snap, Query{
+		System:   "x86_64-linux",
+		Packages: []string{"ath9k-htc-ar7010-firmware"},
+	})
+	if err != nil {
+		t.Fatalf("Resolve package mode failed: %v", err)
+	}
+	if resPkg.EvaluationID != 799 {
+		t.Fatalf("expected package mode for stuck package to select 799, got %d", resPkg.EvaluationID)
+	}
+
+	// 3. Package mode with AllowFailed=true accepts Eval 800.
+	resAllow, err := Resolve(snap, Query{
+		System:      "x86_64-linux",
+		Packages:    []string{"ath9k-htc-ar7010-firmware"},
+		AllowFailed: true,
+	})
+	if err != nil {
+		t.Fatalf("Resolve package mode with AllowFailed failed: %v", err)
+	}
+	if resAllow.EvaluationID != 800 {
+		t.Fatalf("expected AllowFailed=true to select 800, got %d", resAllow.EvaluationID)
+	}
+}

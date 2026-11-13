@@ -4,6 +4,8 @@ import (
 	_ "embed"
 	"fmt"
 	"html"
+	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -18,6 +20,44 @@ var dashboardCSS string
 //go:embed static/dashboard.js
 var dashboardJS string
 
+// unavailablePackageBuild describes a single build of a multi-build package in an evaluation.
+type unavailablePackageBuild struct {
+	Version string `json:"version,omitempty"`
+	Status  string `json:"status"`
+	BuildID int64  `json:"build_id,omitempty"`
+}
+
+// unavailablePackageItem describes a package and its build status(es) in an evaluation.
+type unavailablePackageItem struct {
+	Name    string                    `json:"name"`
+	Channel string                    `json:"channel"`
+	Status  string                    `json:"status"`
+	BuildID int64                     `json:"build_id,omitempty"`
+	Builds  []unavailablePackageBuild `json:"builds,omitempty"`
+}
+
+type unavailableModePayload struct {
+	Available        bool                     `json:"available"`
+	Spec             string                   `json:"spec,omitempty"`
+	Commit           string                   `json:"commit,omitempty"`
+	EvaluationID     int64                    `json:"evaluation_id,omitempty"`
+	NonguixCommit    string                   `json:"nonguix_commit,omitempty"`
+	NonguixEvalID    int64                    `json:"nonguix_eval_id,omitempty"`
+	ServerURL        string                   `json:"server_url"`
+	NonguixURL       string                   `json:"nonguix_url,omitempty"`
+	System           string                   `json:"system"`
+	AvailableCount   int                      `json:"available_count"`
+	UnavailableCount int                      `json:"unavailable_count"`
+	Items            []unavailablePackageItem `json:"items"`
+	Succeeded        []string                 `json:"succeeded,omitempty"`
+	NonguixSucceeded []string                 `json:"nonguix_succeeded,omitempty"`
+}
+
+type unavailableDashboardPayload struct {
+	Guix    unavailableModePayload `json:"guix"`
+	Nonguix unavailableModePayload `json:"nonguix"`
+}
+
 // channelEvalSummary holds the evaluation and pending build state for an additional channel
 // coordinated with a primary Guix commit.
 type channelEvalSummary struct {
@@ -26,6 +66,7 @@ type channelEvalSummary struct {
 	Commit        string
 	Ready         bool
 	PendingJobs   int
+	FailedJobs    int
 	PendingBuilds []store.PendingBuild
 	PendingSample []string
 	ServerURL     string
@@ -36,8 +77,11 @@ type evaluationSummaryItem struct {
 	Commit             string
 	Timestamp          time.Time
 	PendingJobs        int
+	FailedJobs         int
 	PullReady          bool
 	PullEvalID         int64
+	PullPendingJobs    int
+	PullFailedJobs     int
 	AdditionalChannels map[string]channelEvalSummary
 }
 
@@ -45,6 +89,7 @@ type systemOverview struct {
 	System             string
 	StrictReady        *resolver.Result
 	ChannelStrictReady map[string]*resolver.Result
+	ChannelServerURLs  map[string]string
 	Evaluations        []evaluationSummaryItem
 }
 
@@ -120,10 +165,19 @@ func buildSystemOverview(snap *store.Snapshot, sys string, limit int) systemOver
 	ov := systemOverview{
 		System:             sys,
 		ChannelStrictReady: make(map[string]*resolver.Result, len(resolver.SupportedAdditionalChannels)),
+		ChannelServerURLs:  make(map[string]string, len(resolver.SupportedAdditionalChannels)),
 		Evaluations:        make([]evaluationSummaryItem, 0, limit),
 	}
 	if snap == nil {
 		return ov
+	}
+
+	for _, ch := range resolver.SupportedAdditionalChannels {
+		serverURL := snap.ChannelServerURLs[ch]
+		if serverURL == "" {
+			serverURL = cuirass.DefaultChannelServerURL(ch)
+		}
+		ov.ChannelServerURLs[ch] = serverURL
 	}
 
 	if strict, err := resolver.Resolve(snap, resolver.Query{System: sys, MaxPending: 0, Limit: limit}); err == nil {
@@ -151,9 +205,20 @@ func buildSystemOverview(snap *store.Snapshot, sys string, limit int) systemOver
 			Commit:             ev.Commit,
 			Timestamp:          ev.Timestamp,
 			PendingJobs:        data.PendingJobs,
+			FailedJobs:         data.FailedJobs,
 			PullReady:          data.PullReady,
 			PullEvalID:         data.PullEvalID,
 			AdditionalChannels: make(map[string]channelEvalSummary, len(resolver.SupportedAdditionalChannels)),
+		}
+		if data.PullEvalID > 0 {
+			if pullData := snap.ByChannelEvalSystem[store.ChannelEvalSystemKey{
+				Channel: store.GuixJobsetChannel,
+				EvalID:  data.PullEvalID,
+				System:  sys,
+			}]; pullData != nil {
+				item.PullPendingJobs = pullData.PendingJobs
+				item.PullFailedJobs = pullData.FailedJobs
+			}
 		}
 		hasAdditionalChannelEval := false
 		for _, ch := range resolver.SupportedAdditionalChannels {
@@ -179,6 +244,116 @@ func buildSystemOverview(snap *store.Snapshot, sys string, limit int) systemOver
 	}
 
 	return ov
+}
+
+// collectEvaluationPackages extracts all packages (both succeeded and unavailable) in a given evaluation,
+// returning:
+//   - allItems: every package (succeeded and unavailable) sorted by name
+//   - detailedItems: non-succeeded packages + multi-version succeeded packages (with BuildID)
+//   - singleSucceeded: sorted names of single-version succeeded packages (for compact JSON encoding)
+func collectEvaluationPackages(snap *store.Snapshot, channel string, evalID int64, sys string) (allItems []unavailablePackageItem, detailedItems []unavailablePackageItem, singleSucceeded []string) {
+	if snap == nil || evalID <= 0 {
+		return nil, nil, nil
+	}
+
+	var data *store.SystemEvalData
+	var ok bool
+	displayChannel := channel
+
+	if channel == "" || channel == "guix" {
+		channel = "guix"
+		displayChannel = "guix"
+		data, ok = snap.ByEvalSystem[store.EvalSystemKey{EvalID: evalID, System: sys}]
+	} else {
+		if channel == store.GuixJobsetChannel {
+			displayChannel = "guix"
+		}
+		data, ok = snap.ByChannelEvalSystem[store.ChannelEvalSystemKey{
+			Channel: channel,
+			EvalID:  evalID,
+			System:  sys,
+		}]
+	}
+	if !ok || data == nil {
+		return nil, nil, nil
+	}
+
+	snap.ForEachSingleJob(data, func(base string, st cuirass.JobStatus) {
+		item := unavailablePackageItem{
+			Name:    base,
+			Channel: displayChannel,
+			Status:  st.String(),
+		}
+		if st == cuirass.StatusSucceeded {
+			singleSucceeded = append(singleSucceeded, base)
+		} else {
+			item.BuildID = findEvalBuildID(data, base, sys)
+			detailedItems = append(detailedItems, item)
+		}
+		allItems = append(allItems, item)
+	})
+
+	for base, jobs := range data.JobsByBase {
+		if len(jobs) == 0 {
+			continue
+		}
+		sortedJobs := append([]cuirass.Job(nil), jobs...)
+		sort.SliceStable(sortedJobs, func(i, j int) bool {
+			if sortedJobs[i].Version != sortedJobs[j].Version {
+				if sortedJobs[i].Version == "" {
+					return false
+				}
+				if sortedJobs[j].Version == "" {
+					return true
+				}
+				return cuirass.VersionGreater(sortedJobs[i].Version, sortedJobs[j].Version)
+			}
+			return sortedJobs[i].BuildID > sortedJobs[j].BuildID
+		})
+		builds := make([]unavailablePackageBuild, 0, len(sortedJobs))
+		for _, job := range sortedJobs {
+			builds = append(builds, unavailablePackageBuild{
+				Version: job.Version,
+				Status:  job.Status.String(),
+				BuildID: job.BuildID,
+			})
+		}
+		item := unavailablePackageItem{
+			Name:    base,
+			Channel: displayChannel,
+			Status:  sortedJobs[0].Status.String(),
+			BuildID: sortedJobs[0].BuildID,
+			Builds:  builds,
+		}
+		allItems = append(allItems, item)
+		detailedItems = append(detailedItems, item)
+	}
+
+	if len(allItems) > 0 {
+		snap.ForEachMissingTrackedPackage(channel, sys, data, func(base string) {
+			item := unavailablePackageItem{
+				Name:    base,
+				Channel: displayChannel,
+				Status:  "not-built",
+			}
+			allItems = append(allItems, item)
+			detailedItems = append(detailedItems, item)
+		})
+	}
+
+	sortUnavailablePackages(allItems)
+	sortUnavailablePackages(detailedItems)
+	sort.Strings(singleSucceeded)
+	return allItems, detailedItems, singleSucceeded
+}
+
+func sortUnavailablePackages(items []unavailablePackageItem) {
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Name != items[j].Name {
+			return items[i].Name < items[j].Name
+		}
+		return items[i].Channel < items[j].Channel
+	})
 }
 
 // matchChannelEvaluation finds the best evaluation for an additional channel paired with guixCommit on sys.
@@ -212,6 +387,7 @@ func matchChannelEvaluation(snap *store.Snapshot, channel, guixCommit, sys strin
 				Commit:        chEv.Commit,
 				Ready:         chData.PendingJobs == 0,
 				PendingJobs:   chData.PendingJobs,
+				FailedJobs:    chData.FailedJobs,
 				PendingBuilds: chData.PendingBuilds,
 				PendingSample: chData.PendingSample,
 				ServerURL:     serverURL,
@@ -232,7 +408,7 @@ func renderHTMLDashboard(st dashboardState) string {
 	escBaseURL := html.EscapeString(st.BaseURL)
 	escServerURL := html.EscapeString(st.ServerURL)
 
-	b.WriteString(renderPageHead("Guix Pull with All Prebuilts Ready"))
+	b.WriteString(renderPageHead("Guix Pull Ready"))
 	b.WriteString(renderPageHeader(st))
 
 	b.WriteString(`<main>`)
@@ -296,7 +472,7 @@ func renderPageHeader(st dashboardState) string {
 
 	return fmt.Sprintf(`
 	<header class="site-header-container">
-		<strong class="site-header-element-left"><a href="/%s">Guix Pull with All Prebuilts Ready</a></strong>
+		<strong class="site-header-element-left"><a href="/%s">Guix Pull Ready</a></strong>
 		<div class="site-header-element-right">
 			<label style="font-size:0.88rem;font-weight:500;color:var(--muted);cursor:pointer;display:inline-flex;align-items:center;gap:0.35rem;"><input type="checkbox" id="main-nonguix-toggle"%s onchange="toggleMainNonguix(this.checked)"> Require <code>nonguix</code> channel</label>
 			<select id="arch-select" class="arch-select mono" aria-label="Target architecture" onchange="changeSystem(this.value)">%s</select>
@@ -382,6 +558,91 @@ func renderCLIExamplesBlock(escBaseURL string, activeSystem string, requireNongu
 	return b.String()
 }
 
+func renderStatusBadgeHTML(status string) string {
+	switch status {
+	case "succeeded":
+		return `<span class="badge badge-ok">Succeeded</span>`
+	case "failed":
+		return `<span class="badge badge-danger">Failed</span>`
+	case "failed-dependency":
+		return `<span class="badge badge-warn">Failed (dependency)</span>`
+	case "failed-other":
+		return `<span class="badge badge-warn">Failed (other)</span>`
+	case "scheduled", "submitted", "started":
+		return `<span class="badge badge-warn">Pending</span>`
+	case "stuck":
+		return `<span class="badge badge-warn">Stuck</span>`
+	case "canceled":
+		return `<span class="badge badge-muted">Canceled</span>`
+	case "not-built":
+		return `<span class="badge badge-muted">Not built</span>`
+	default:
+		return `<span class="badge badge-warn">` + html.EscapeString(status) + `</span>`
+	}
+}
+
+func buildCuirassSearchURLServer(payload unavailableModePayload, item unavailablePackageItem) string {
+	basePkg := item.Name
+	if atIdx := strings.IndexByte(basePkg, '@'); atIdx > 0 {
+		basePkg = basePkg[:atIdx]
+	}
+	isNg := item.Channel == "nonguix"
+	serverURL := payload.ServerURL
+	if serverURL == "" {
+		serverURL = "https://ci.guix.gnu.org"
+	}
+	spec := payload.Spec
+	if spec == "" {
+		spec = "master"
+	}
+	if isNg {
+		serverURL = payload.NonguixURL
+		if serverURL == "" {
+			serverURL = "https://cuirass.nonguix.org"
+		}
+		spec = "nonguix"
+	}
+	query := fmt.Sprintf("spec:%s system:%s %s", spec, payload.System, basePkg)
+	return serverURL + "/search?query=" + url.QueryEscape(query)
+}
+
+func serverHost(rawURL string) string {
+	if rawURL == "" {
+		return "ci.guix.gnu.org"
+	}
+	if u, err := url.Parse(rawURL); err == nil && u.Host != "" {
+		return u.Host
+	}
+	trimmed := strings.TrimPrefix(strings.TrimPrefix(rawURL, "https://"), "http://")
+	if idx := strings.IndexByte(trimmed, '/'); idx != -1 {
+		trimmed = trimmed[:idx]
+	}
+	if trimmed != "" {
+		return trimmed
+	}
+	return "ci.guix.gnu.org"
+}
+
+func evaluationHref(serverURL string, evalID int64, sys string) string {
+	return evaluationHrefWithStatus(serverURL, evalID, sys, "")
+}
+
+func evaluationHrefWithStatus(serverURL string, evalID int64, sys string, status string) string {
+	host := serverHost(serverURL)
+	var params []string
+	if sys != "" && sys != "x86_64-linux" {
+		params = append(params, "system="+url.QueryEscape(sys))
+	}
+	if status != "" {
+		params = append(params, "status="+url.QueryEscape(status))
+	}
+	suffix := ""
+	if len(params) > 0 {
+		suffix = "?" + strings.Join(params, "&")
+	}
+	return fmt.Sprintf("/substitutes/%s/evaluations/%d%s", url.PathEscape(host), evalID, suffix)
+}
+
 func renderEvaluationsTable(ov systemOverview, escServerURL string, requireNonguix bool) string {
 	var b strings.Builder
 	ngColStyle := ` style="display:none;"`
@@ -461,30 +722,27 @@ func renderEvaluationsTable(ov systemOverview, escServerURL string, requireNongu
 					html.EscapeString(isoStr), html.EscapeString(utcStr), html.EscapeString(shortUTC))
 			}
 
-			var pullCell string
-			if !cuirass.SupportsGuixJobset(ov.System) {
-				pullCell = fmt.Sprintf(`<span class="badge badge-muted" title="ci.guix.gnu.org does not build the guix jobset for %s">Not built</span>`,
-					html.EscapeString(ov.System))
-			} else {
-				pullBadge := `<span class="badge badge-warn">Pending</span>`
-				if item.PullReady {
-					pullBadge = `<span class="badge badge-ok">Ready</span>`
-				}
-				pullCell = pullBadge
-				if item.PullEvalID > 0 {
-					pullCell = fmt.Sprintf(`<div style="display:inline-flex;align-items:center;gap:0.4rem;"><a href="%s/eval/%d" target="_blank" rel="noopener" class="mono"><strong>#%d</strong></a>%s</div>`,
-						escServerURL, item.PullEvalID, item.PullEvalID, pullBadge)
-				}
-			}
+			pullCell := renderPullCell(item.PullEvalID, item.PullReady, item.PullPendingJobs, item.PullFailedJobs, escServerURL, ov.System)
 
-			masterBadge := `<span class="badge badge-warn">Pending</span>`
-			if item.PendingJobs == 0 {
-				masterBadge = `<span class="badge badge-ok">Ready</span>`
+			evalPageURL := html.EscapeString(evaluationHref(escServerURL, item.EvaluationID, ov.System))
+			readyURL := html.EscapeString(evaluationHrefWithStatus(escServerURL, item.EvaluationID, ov.System, "succeeded"))
+			masterBadge := fmt.Sprintf(`<a href="%s" class="badge badge-ok" title="All non-stuck builds completed in evaluation #%d (click to inspect available substitutes)">Ready</a>`,
+				readyURL, item.EvaluationID)
+			if item.PendingJobs > 0 {
+				pendingURL := html.EscapeString(evaluationHrefWithStatus(escServerURL, item.EvaluationID, ov.System, "pending"))
+				masterBadge = fmt.Sprintf(`<a href="%s" class="badge badge-warn" title="%d jobs pending in evaluation #%d (click to inspect)">%d Pending</a>`,
+					pendingURL, item.PendingJobs, item.EvaluationID, item.PendingJobs)
 			}
-			masterCell := fmt.Sprintf(`<div style="display:inline-flex;align-items:center;gap:0.4rem;"><a href="%s/eval/%d" target="_blank" rel="noopener" class="mono"><strong>#%d</strong></a>%s</div>`,
-				escServerURL, item.EvaluationID, item.EvaluationID, masterBadge)
+			var masterFailedBadge string
+			if item.FailedJobs > 0 {
+				failedURL := html.EscapeString(evaluationHrefWithStatus(escServerURL, item.EvaluationID, ov.System, "failed"))
+				masterFailedBadge = fmt.Sprintf(`<a href="%s" class="badge badge-danger" title="%d jobs failed or had a failed dependency in evaluation #%d (click to inspect)">%d Failed</a>`,
+					failedURL, item.FailedJobs, item.EvaluationID, item.FailedJobs)
+			}
+			masterCell := fmt.Sprintf(`<div style="display:inline-flex;align-items:center;gap:0.4rem;flex-wrap:wrap;"><a href="%s" class="mono"><strong>#%d</strong></a>%s%s</div>`,
+				evalPageURL, item.EvaluationID, masterBadge, masterFailedBadge)
 
-			nonguixCell := renderChannelCell("nonguix", item, ov.System)
+			nonguixCell := renderChannelCell("nonguix", item, ov.System, isLatestNg)
 
 			fmt.Fprintf(&b, `
 					<tr%s>
@@ -515,7 +773,48 @@ func renderEvaluationsTable(ov systemOverview, escServerURL string, requireNongu
 	return b.String()
 }
 
-func renderChannelCell(channel string, item evaluationSummaryItem, sys string) string {
+func renderPullCell(pullEvalID int64, pullReady bool, pullPendingJobs int, pullFailedJobs int, serverURL string, sys string) string {
+	if !cuirass.SupportsGuixJobset(sys) {
+		return fmt.Sprintf(`<span class="badge badge-muted" title="ci.guix.gnu.org does not build the guix jobset for %s">Not built</span>`,
+			html.EscapeString(sys))
+	}
+	if pullEvalID <= 0 {
+		if pullReady {
+			return `<span class="badge badge-ok">Ready</span>`
+		}
+		return `<span class="badge badge-warn">Pending</span>`
+	}
+
+	pullEvalURL := html.EscapeString(evaluationHref(serverURL, pullEvalID, sys))
+	var badges strings.Builder
+	if pullReady {
+		readyURL := html.EscapeString(evaluationHrefWithStatus(serverURL, pullEvalID, sys, "succeeded"))
+		fmt.Fprintf(&badges, `<a href="%s" class="badge badge-ok" title="guix pull substitute ready in evaluation #%d (click to inspect)">Ready</a>`,
+			readyURL, pullEvalID)
+	} else if pullPendingJobs == 0 && pullFailedJobs > 0 {
+		failedURL := html.EscapeString(evaluationHrefWithStatus(serverURL, pullEvalID, sys, "failed"))
+		fmt.Fprintf(&badges, `<a href="%s" class="badge badge-danger" title="%d guix pull jobs failed in evaluation #%d (click to inspect)">%d Failed</a>`,
+			failedURL, pullFailedJobs, pullEvalID, pullFailedJobs)
+	} else {
+		pendingURL := html.EscapeString(evaluationHrefWithStatus(serverURL, pullEvalID, sys, "pending"))
+		pendingLabel := "Pending"
+		if pullPendingJobs > 0 {
+			pendingLabel = fmt.Sprintf("%d Pending", pullPendingJobs)
+		}
+		fmt.Fprintf(&badges, `<a href="%s" class="badge badge-warn" title="guix pull substitute pending in evaluation #%d (click to inspect)">%s</a>`,
+			pendingURL, pullEvalID, pendingLabel)
+		if pullFailedJobs > 0 {
+			failedURL := html.EscapeString(evaluationHrefWithStatus(serverURL, pullEvalID, sys, "failed"))
+			fmt.Fprintf(&badges, `<a href="%s" class="badge badge-danger" title="%d guix pull jobs failed in evaluation #%d (click to inspect)">%d Failed</a>`,
+				failedURL, pullFailedJobs, pullEvalID, pullFailedJobs)
+		}
+	}
+
+	return fmt.Sprintf(`<div style="display:inline-flex;align-items:center;gap:0.4rem;flex-wrap:wrap;"><a href="%s" class="mono"><strong>#%d</strong></a>%s</div>`,
+		pullEvalURL, pullEvalID, badges.String())
+}
+
+func renderChannelCell(channel string, item evaluationSummaryItem, sys string, _ bool) string {
 	if !cuirass.SupportsChannelJobset(channel, sys) {
 		serverHost := strings.TrimPrefix(cuirass.DefaultChannelServerURL(channel), "https://")
 		if serverHost == "" {
@@ -533,9 +832,17 @@ func renderChannelCell(channel string, item evaluationSummaryItem, sys string) s
 	escServer := html.EscapeString(chSum.ServerURL)
 	shortChCommit := html.EscapeString(shortCommit(chSum.Commit))
 	escChannel := html.EscapeString(channel)
+	ngEvalPageURL := html.EscapeString(evaluationHref(chSum.ServerURL, chSum.EvalID, sys))
+	var chFailedBadge string
+	if chSum.FailedJobs > 0 {
+		ngFailedURL := html.EscapeString(evaluationHrefWithStatus(chSum.ServerURL, chSum.EvalID, sys, "failed"))
+		chFailedBadge = fmt.Sprintf(`<a href="%s" class="badge badge-danger" title="%d %s jobs failed in evaluation #%d (click to inspect)">%d Failed</a>`,
+			ngFailedURL, chSum.FailedJobs, escChannel, chSum.EvalID, chSum.FailedJobs)
+	}
 	if chSum.Ready {
-		return fmt.Sprintf(`<div style="display:inline-flex;align-items:center;gap:0.4rem;"><a href="%s/eval/%d" target="_blank" rel="noopener" class="mono" title="%s commit %s"><strong>#%d</strong></a><span class="badge badge-ok">Ready</span></div>`,
-			escServer, chSum.EvalID, escChannel, shortChCommit, chSum.EvalID)
+		ngReadyURL := html.EscapeString(evaluationHrefWithStatus(chSum.ServerURL, chSum.EvalID, sys, "succeeded"))
+		return fmt.Sprintf(`<div style="display:inline-flex;align-items:center;gap:0.4rem;flex-wrap:wrap;"><a href="%s" class="mono" title="%s commit %s"><strong>#%d</strong></a><a href="%s" class="badge badge-ok" title="All %s builds completed in evaluation #%d (click to inspect available substitutes)">Ready</a>%s</div>`,
+			ngEvalPageURL, escChannel, shortChCommit, chSum.EvalID, ngReadyURL, escChannel, chSum.EvalID, chFailedBadge)
 	}
 
 	builds := chSum.PendingBuilds
@@ -562,11 +869,16 @@ func renderChannelCell(channel string, item evaluationSummaryItem, sys string) s
 		badgeTitleAttr = fmt.Sprintf(` title="%s"`, html.EscapeString(tooltip))
 	}
 
+	ngPendingURL := html.EscapeString(evaluationHrefWithStatus(chSum.ServerURL, chSum.EvalID, sys, "pending"))
 	badgeLabel := "Pending"
 	if chSum.PendingJobs > 0 {
-		badgeLabel = fmt.Sprintf("Pending (%d)", chSum.PendingJobs)
+		badgeLabel = fmt.Sprintf("%d Pending", chSum.PendingJobs)
 	}
-	chBadge := fmt.Sprintf(`<span class="badge badge-warn"%s>%s</span>`, badgeTitleAttr, badgeLabel)
+	if badgeTitleAttr == "" && chSum.PendingJobs > 0 {
+		badgeTitleAttr = fmt.Sprintf(` title="%d %s jobs pending in evaluation #%d (click to inspect)"`,
+			chSum.PendingJobs, escChannel, chSum.EvalID)
+	}
+	chBadge := fmt.Sprintf(`<a href="%s" class="badge badge-warn"%s>%s</a>`, ngPendingURL, badgeTitleAttr, badgeLabel)
 
 	var detailsHTML string
 	if len(builds) > 0 {
@@ -598,8 +910,8 @@ func renderChannelCell(channel string, item evaluationSummaryItem, sys string) s
 			strings.Join(parts, ", "), extra)
 	}
 
-	return fmt.Sprintf(`<div style="display:inline-flex;align-items:center;gap:0.4rem;flex-wrap:wrap;"><a href="%s/eval/%d" target="_blank" rel="noopener" class="mono" title="%s commit %s"><strong>#%d</strong></a>%s%s</div>`,
-		escServer, chSum.EvalID, escChannel, shortChCommit, chSum.EvalID, chBadge, detailsHTML)
+	return fmt.Sprintf(`<div style="display:inline-flex;align-items:center;gap:0.4rem;flex-wrap:wrap;"><a href="%s" class="mono" title="%s commit %s"><strong>#%d</strong></a>%s%s%s</div>`,
+		ngEvalPageURL, escChannel, shortChCommit, chSum.EvalID, chBadge, chFailedBadge, detailsHTML)
 }
 
 func renderFooter(st dashboardState) string {
