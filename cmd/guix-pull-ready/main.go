@@ -31,7 +31,7 @@ func main() {
 		limit               = flag.Int("limit", 40, "Number of recent master evaluations to track")
 		pollInterval        = flag.Duration("poll-interval", 30*time.Minute, "Background Cuirass polling interval")
 		concurrency         = flag.Int("concurrency", 2, "Maximum concurrent HTTP requests to Cuirass")
-		maxActiveRefresh    = flag.Int("max-active-refresh", 0, "Maximum incomplete evaluations to refresh per system per poll cycle (0 = refresh all incomplete in window)")
+		maxActiveRefresh    = flag.Int("max-active-refresh", 8, "Maximum incomplete evaluations to refresh per system per poll cycle (0 = refresh all incomplete in window)")
 		maxReconcilePending = flag.Int("max-reconcile-pending", 40, "Maximum pending jobs per evaluation to reconcile via /build/<id> (0 to disable)")
 	)
 	flag.Parse()

@@ -6,6 +6,7 @@ package poller
 import (
 	"context"
 	"log/slog"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -122,6 +123,7 @@ func (p *Poller) SyncOnce(ctx context.Context) error {
 	}()
 
 	err := p.syncEvaluations(ctx)
+	debug.FreeOSMemory()
 	p.mu.Lock()
 	p.lastPollErr = err
 	p.mu.Unlock()

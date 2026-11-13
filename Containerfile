@@ -8,6 +8,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/guix-pu
 
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates && adduser -D -u 10001 guix
+ENV GOGC=50 GOMEMLIMIT=256MiB
 USER guix
 WORKDIR /data
 COPY --from=builder /out/guix-pull-ready /usr/local/bin/guix-pull-ready

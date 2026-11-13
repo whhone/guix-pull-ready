@@ -46,6 +46,13 @@ func TestStorePersistAndReload(t *testing.T) {
 	if len(snap.Evaluations) != 1 || snap.Evaluations[0].Commit != "commit1001" {
 		t.Fatalf("unexpected evaluations after reload: %+v", snap.Evaluations)
 	}
+	if !snap.IsPackageTracked("guix", "x86_64-linux", "emacs") || snap.IsPackageTracked("guix", "x86_64-linux", "nonexistent") {
+		t.Fatalf("unexpected IsPackageTracked state after reload")
+	}
+	data := snap.ByEvalSystem[EvalSystemKey{EvalID: 1001, System: "x86_64-linux"}]
+	if stGot, ok := snap.LookupSingleJob(data, "emacs"); !ok || stGot != cuirass.StatusSucceeded {
+		t.Fatalf("LookupSingleJob(emacs) = (%v, %v), want (succeeded, true)", stGot, ok)
+	}
 }
 
 func TestStoreMultiChannelPersistAndRetention(t *testing.T) {

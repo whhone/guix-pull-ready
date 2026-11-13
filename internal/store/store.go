@@ -22,6 +22,10 @@ import (
 	"guix-pull-ready/internal/cuirass"
 )
 
+// SingleJobAbsent marks a package slot in DenseSingleJobs that has no single-job
+// entry (either absent from the evaluation or promoted into JobsByBase).
+const SingleJobAbsent int8 = -128
+
 // EvalSystemKey uniquely identifies an evaluation for a target system architecture.
 type EvalSystemKey struct {
 	EvalID int64
@@ -66,10 +70,10 @@ type PendingBuild struct {
 //
 // Memory layout optimization:
 // A single GNU Guix evaluation contains ~35,000 package jobs per architecture.
-// Storing a []cuirass.Job slice for every package across 40 evaluations would allocate
-// over 1.4 million slice headers and structs. Because ~99% of packages have only a single
-// job per evaluation, SingleJobs stores their status directly as a 1-byte int8 keyed by
-// an interned package name. Only the ~200 packages with multiple versions in the same
+// Storing a []cuirass.Job slice or map[string]int8 for every package across evaluations would
+// allocate hundreds of megabytes of map buckets and pointers. Because ~99% of packages have only
+// a single job per evaluation, DenseSingleJobs stores their status as a 1-byte int8 indexed by
+// dense package ID. Only the ~200 packages with multiple versions in the same
 // evaluation (such as gcc-toolchain or linux-libre) are stored in JobsByBase.
 type SystemEvalData struct {
 	EvalID        int64
@@ -83,8 +87,9 @@ type SystemEvalData struct {
 	PullReady     bool
 	PullEvalID    int64
 	Complete      bool
-	// SingleJobs maps single-job base package names directly to their JobStatus (as int8).
-	SingleJobs map[string]int8
+	// DenseSingleJobs maps dense package IDs directly to their JobStatus (as int8),
+	// or SingleJobAbsent (-128) when absent or promoted into JobsByBase.
+	DenseSingleJobs []int8
 	// JobsByBase stores full job slices only for packages that have multiple jobs
 	// in the same evaluation (e.g. gcc-toolchain, linux-libre).
 	JobsByBase map[string][]cuirass.Job
@@ -92,18 +97,72 @@ type SystemEvalData struct {
 
 // Snapshot is an immutable, read-optimized view of the store state used by HTTP handlers.
 type Snapshot struct {
-	ServerURL              string
-	ChannelServerURLs      map[string]string
-	Systems                []string
-	LastSyncedAt           time.Time
-	Evaluations            []EvaluationRecord
-	ByEvalSystem           map[EvalSystemKey]*SystemEvalData
-	TrackedBasePackages    map[string]map[string]bool // system -> basePkg -> tracked
-	GuixEvalByCommit       map[string]EvaluationRecord
-	GuixEvalIndexByCommit  map[string]int
-	ChannelEvaluations     map[string][]EvaluationRecord
-	ByChannelEvalSystem    map[ChannelEvalSystemKey]*SystemEvalData
-	TrackedChannelPackages map[string]map[string]map[string]bool // channel -> system -> basePkg -> tracked
+	ServerURL             string
+	ChannelServerURLs     map[string]string
+	Systems               []string
+	LastSyncedAt          time.Time
+	Evaluations           []EvaluationRecord
+	ByEvalSystem          map[EvalSystemKey]*SystemEvalData
+	GuixEvalByCommit      map[string]EvaluationRecord
+	GuixEvalIndexByCommit map[string]int
+	ChannelEvaluations    map[string][]EvaluationRecord
+	ByChannelEvalSystem   map[ChannelEvalSystemKey]*SystemEvalData
+	pkgID                 map[string]uint32
+}
+
+// IsPackageTracked reports whether basePkg appears in at least one cached evaluation
+// for (channel, system).
+func (snap *Snapshot) IsPackageTracked(channel, system, basePkg string) bool {
+	if snap == nil || basePkg == "" {
+		return false
+	}
+	id, ok := snap.pkgID[basePkg]
+	if !ok {
+		return false
+	}
+	if channel == "" || channel == "guix" {
+		for k, data := range snap.ByEvalSystem {
+			if k.System != system || data == nil {
+				continue
+			}
+			if int(id) < len(data.DenseSingleJobs) && data.DenseSingleJobs[id] != SingleJobAbsent {
+				return true
+			}
+			if _, ok := data.JobsByBase[basePkg]; ok {
+				return true
+			}
+		}
+		return false
+	}
+	for k, data := range snap.ByChannelEvalSystem {
+		if k.Channel != channel || k.System != system || data == nil {
+			continue
+		}
+		if int(id) < len(data.DenseSingleJobs) && data.DenseSingleJobs[id] != SingleJobAbsent {
+			return true
+		}
+		if _, ok := data.JobsByBase[basePkg]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// LookupSingleJob returns the JobStatus of a single-job package in data, or (0, false)
+// if the package is absent or stored in data.JobsByBase as a multi-version package.
+func (snap *Snapshot) LookupSingleJob(data *SystemEvalData, basePkg string) (cuirass.JobStatus, bool) {
+	if snap == nil || data == nil || basePkg == "" {
+		return 0, false
+	}
+	id, ok := snap.pkgID[basePkg]
+	if !ok || int(id) >= len(data.DenseSingleJobs) {
+		return 0, false
+	}
+	raw := data.DenseSingleJobs[id]
+	if raw == SingleJobAbsent {
+		return 0, false
+	}
+	return cuirass.JobStatus(raw), true
 }
 
 // persistedState is the on-disk representation saved atomically to the database file.
@@ -120,15 +179,19 @@ type persistedState struct {
 	ChannelEvaluations map[string][]EvaluationRecord
 	ChannelSystemData  map[ChannelEvalSystemKey]*SystemEvalData
 	ChannelBuildNames  map[ChannelBuildKey]string
+	PackageDict        []string // dense package ID -> basePkg name
 }
 
 // Store manages persistent state and publishes lock-free in-memory snapshots.
 type Store struct {
-	mu         sync.RWMutex
-	dbPath     string
-	state      persistedState
-	internPool map[string]string
-	snapshot   atomic.Pointer[Snapshot]
+	mu           sync.RWMutex
+	dbPath       string
+	state        persistedState
+	internPool   map[string]string
+	pkgID        map[string]uint32
+	frozenPkgID  map[string]uint32
+	scratchFirst []int32
+	snapshot     atomic.Pointer[Snapshot]
 }
 
 // Open opens or initializes a persistent store at dbPath.
@@ -137,6 +200,7 @@ func Open(dbPath string, serverURL string, systems []string) (*Store, error) {
 	s := &Store{
 		dbPath:     dbPath,
 		internPool: make(map[string]string, 40000),
+		pkgID:      make(map[string]uint32, 40000),
 		state: persistedState{
 			ServerURL:          serverURL,
 			ChannelServerURLs:  make(map[string]string),
@@ -192,6 +256,25 @@ func (s *Store) internLocked(str string) string {
 	return str
 }
 
+func (s *Store) internPkgIDLocked(pkg string) (string, uint32) {
+	ipkg := s.internLocked(pkg)
+	if id, ok := s.pkgID[ipkg]; ok {
+		return ipkg, id
+	}
+	id := uint32(len(s.state.PackageDict))
+	s.state.PackageDict = append(s.state.PackageDict, ipkg)
+	s.pkgID[ipkg] = id
+	return ipkg, id
+}
+
+func clampSingleStatus(st cuirass.JobStatus) int8 {
+	v := int(st)
+	if v <= int(SingleJobAbsent) || v > 127 {
+		return int8(cuirass.StatusFailedOther)
+	}
+	return int8(v)
+}
+
 func (s *Store) loadFromDisk() error {
 	f, err := os.Open(s.dbPath)
 	if err != nil {
@@ -229,6 +312,13 @@ func (s *Store) loadFromDisk() error {
 		loaded.ChannelBuildNames = make(map[ChannelBuildKey]string)
 	}
 
+	for id, pkg := range loaded.PackageDict {
+		ipkg := s.internLocked(pkg)
+		loaded.PackageDict[id] = ipkg
+		s.pkgID[ipkg] = uint32(id)
+	}
+	s.state.PackageDict = loaded.PackageDict
+
 	// Re-intern package and job name strings after gob decoding to deduplicate heap strings,
 	// and populate cached versions on multi-version jobs.
 	for k, data := range loaded.SystemData {
@@ -236,17 +326,10 @@ func (s *Store) loadFromDisk() error {
 			data.PullReady = true
 			data.PullEvalID = 0
 		}
-		if len(data.SingleJobs) > 0 {
-			internedSingle := make(map[string]int8, len(data.SingleJobs))
-			for pkg, st := range data.SingleJobs {
-				internedSingle[s.internLocked(pkg)] = st
-			}
-			data.SingleJobs = internedSingle
-		}
 		if len(data.JobsByBase) > 0 {
 			multi := make(map[string][]cuirass.Job, len(data.JobsByBase))
 			for pkg, jobs := range data.JobsByBase {
-				ipkg := s.internLocked(pkg)
+				ipkg, _ := s.internPkgIDLocked(pkg)
 				for i := range jobs {
 					jobs[i].Name = s.internLocked(jobs[i].Name)
 					if nix, ok := loaded.BuildNixNames[jobs[i].BuildID]; ok && nix != "" {
@@ -260,17 +343,10 @@ func (s *Store) loadFromDisk() error {
 	}
 
 	for chKey, data := range loaded.ChannelSystemData {
-		if len(data.SingleJobs) > 0 {
-			internedSingle := make(map[string]int8, len(data.SingleJobs))
-			for pkg, st := range data.SingleJobs {
-				internedSingle[s.internLocked(pkg)] = st
-			}
-			data.SingleJobs = internedSingle
-		}
 		if len(data.JobsByBase) > 0 {
 			multi := make(map[string][]cuirass.Job, len(data.JobsByBase))
 			for pkg, jobs := range data.JobsByBase {
-				ipkg := s.internLocked(pkg)
+				ipkg, _ := s.internPkgIDLocked(pkg)
 				for i := range jobs {
 					jobs[i].Name = s.internLocked(jobs[i].Name)
 					bKey := ChannelBuildKey{Channel: chKey.Channel, BuildID: jobs[i].BuildID}
@@ -297,6 +373,7 @@ func (s *Store) loadFromDisk() error {
 		}
 	}
 
+	loaded.PackageDict = s.state.PackageDict
 	s.state = loaded
 	return nil
 }
@@ -646,9 +723,9 @@ func (s *Store) UpdateChannelEvaluations(channel string, evals []EvaluationRecor
 
 // UpsertChannelSystemEval indexes and stores all jobs for a single (channel, evalID, commit, system).
 //
-// Each job is first placed into singleJobs (1 byte per package). If a second job with the
-// same base package name is encountered in the same evaluation, the package is promoted
-// from singleJobs into multiJobs (JobsByBase) so version-specific queries can inspect all
+// Each job is first placed into DenseSingleJobs (1 byte per package ID, pointer-free). If a second
+// job with the same base package name is encountered in the same evaluation, the package is promoted
+// from DenseSingleJobs into multiJobs (JobsByBase) so version-specific queries can inspect all
 // candidate builds.
 func (s *Store) UpsertChannelSystemEval(channel string, evalID int64, commit string, system string, jobs []cuirass.Job) {
 	if channel == "" {
@@ -672,11 +749,11 @@ func (s *Store) UpsertChannelSystemEval(channel string, evalID int64, commit str
 		return nix, ok
 	}
 
-	singleJobs := make(map[string]int8, len(jobs))
+	denseStatuses := make([]int8, 0, len(jobs))
+	s.scratchFirst = s.scratchFirst[:0]
 	multiJobs := make(map[string][]cuirass.Job)
-	firstJob := make(map[string]cuirass.Job)
 
-	for _, j := range jobs {
+	for jobIdx, j := range jobs {
 		if !strings.HasSuffix(j.Name, suffix) {
 			continue
 		}
@@ -701,37 +778,42 @@ func (s *Store) UpsertChannelSystemEval(channel string, evalID int64, commit str
 		if base == "" {
 			continue
 		}
-		ibase := s.internLocked(base)
+		ibase, pkgID := s.internPkgIDLocked(base)
+		id := int(pkgID)
+		for len(denseStatuses) <= id {
+			denseStatuses = append(denseStatuses, SingleJobAbsent)
+		}
+		for len(s.scratchFirst) <= id {
+			s.scratchFirst = append(s.scratchFirst, -1)
+		}
 
-		if existingList, isMulti := multiJobs[ibase]; isMulti {
+		prevIdx := s.scratchFirst[id]
+		if prevIdx == -2 {
 			j.Name = s.internLocked(j.Name)
 			if nix, ok := lookupNixName(j.BuildID); ok && nix != "" {
 				j.Version = cuirass.NixnameToVersion(ibase, nix)
 			}
-			multiJobs[ibase] = append(existingList, j)
-		} else if prevStatus, hasSingle := singleJobs[ibase]; hasSingle {
+			multiJobs[ibase] = append(multiJobs[ibase], j)
+		} else if prevIdx >= 0 {
 			// Promote from single-job to multi-job package.
-			delete(singleJobs, ibase)
-			first := firstJob[ibase]
-			delete(firstJob, ibase)
+			first := jobs[prevIdx]
 			first.Name = s.internLocked(first.Name)
-			first.Status = cuirass.JobStatus(prevStatus)
 			if nix, ok := lookupNixName(first.BuildID); ok && nix != "" {
 				first.Version = cuirass.NixnameToVersion(ibase, nix)
 			}
+			denseStatuses[id] = SingleJobAbsent
+			s.scratchFirst[id] = -2
+
 			j.Name = s.internLocked(j.Name)
 			if nix, ok := lookupNixName(j.BuildID); ok && nix != "" {
 				j.Version = cuirass.NixnameToVersion(ibase, nix)
 			}
 			multiJobs[ibase] = []cuirass.Job{first, j}
 		} else {
-			singleJobs[ibase] = int8(j.Status)
-			if j.Version != "" || j.BuildID > 0 {
-				firstJob[ibase] = j
-			}
+			denseStatuses[id] = clampSingleStatus(j.Status)
+			s.scratchFirst[id] = int32(jobIdx)
 		}
 	}
-	firstJob = nil // allow GC
 
 	var pullReady bool
 	var pullEvalID int64
@@ -748,19 +830,19 @@ func (s *Store) UpsertChannelSystemEval(channel string, evalID int64, commit str
 
 	total := succeeded + pending + failed
 	evalData := &SystemEvalData{
-		EvalID:        evalID,
-		System:        system,
-		TotalJobs:     total,
-		SucceededJobs: succeeded,
-		PendingJobs:   pending,
-		FailedJobs:    failed,
-		PendingSample: pendingSample,
-		PendingBuilds: pendingBuilds,
-		PullReady:     pullReady,
-		PullEvalID:    pullEvalID,
-		Complete:      total > 0 && pending == 0,
-		SingleJobs:    singleJobs,
-		JobsByBase:    multiJobs,
+		EvalID:          evalID,
+		System:          system,
+		TotalJobs:       total,
+		SucceededJobs:   succeeded,
+		PendingJobs:     pending,
+		FailedJobs:      failed,
+		PendingSample:   pendingSample,
+		PendingBuilds:   pendingBuilds,
+		PullReady:       pullReady,
+		PullEvalID:      pullEvalID,
+		Complete:        total > 0 && pending == 0,
+		DenseSingleJobs: denseStatuses,
+		JobsByBase:      multiJobs,
 	}
 
 	if isGuix {
@@ -791,12 +873,20 @@ func BasePackageFromJobName(jobName, system string) string {
 }
 
 // rebuildSnapshotLocked constructs a new immutable Snapshot and stores it atomically.
-// SingleJobs maps are never mutated in place (UpsertChannelSystemEval allocates a fresh map on
-// replacement), so their map references can be shared directly with the Snapshot.
+// DenseSingleJobs slices are never mutated in place (UpsertChannelSystemEval allocates a fresh
+// slice on replacement), so their slice headers can be shared directly with the Snapshot.
 // JobsByBase slices can have their Version fields updated in place by SetChannelBuildNixNames,
 // so those ~200 multi-version package slices are deep-copied to keep the Snapshot race-free.
 // Caller must hold s.mu.Lock().
 func (s *Store) rebuildSnapshotLocked() {
+	if len(s.frozenPkgID) != len(s.pkgID) {
+		frozen := make(map[string]uint32, len(s.pkgID))
+		for pkg, id := range s.pkgID {
+			frozen[pkg] = id
+		}
+		s.frozenPkgID = frozen
+	}
+
 	evals := make([]EvaluationRecord, len(s.state.Evaluations))
 	guixByCommit := make(map[string]EvaluationRecord, len(s.state.Evaluations))
 	guixIdxByCommit := make(map[string]int, len(s.state.Evaluations))
@@ -818,14 +908,9 @@ func (s *Store) rebuildSnapshotLocked() {
 	}
 
 	byEvalSys := make(map[EvalSystemKey]*SystemEvalData, len(s.state.SystemData))
-	tracked := make(map[string]map[string]bool, len(s.state.Systems))
-	for _, sys := range s.state.Systems {
-		tracked[sys] = make(map[string]bool, 35000)
-	}
-
 	for k, v := range s.state.SystemData {
 		copied := *v
-		copied.SingleJobs = v.SingleJobs
+		copied.DenseSingleJobs = v.DenseSingleJobs
 
 		copiedJobsByBase := make(map[string][]cuirass.Job, len(v.JobsByBase))
 		for basePkg, jobs := range v.JobsByBase {
@@ -835,18 +920,6 @@ func (s *Store) rebuildSnapshotLocked() {
 		}
 		copied.JobsByBase = copiedJobsByBase
 		byEvalSys[k] = &copied
-
-		sysMap, ok := tracked[k.System]
-		if !ok {
-			sysMap = make(map[string]bool, 35000)
-			tracked[k.System] = sysMap
-		}
-		for basePkg := range v.SingleJobs {
-			sysMap[basePkg] = true
-		}
-		for basePkg := range v.JobsByBase {
-			sysMap[basePkg] = true
-		}
 	}
 
 	chEvals := make(map[string][]EvaluationRecord, len(s.state.ChannelEvaluations))
@@ -866,11 +939,9 @@ func (s *Store) rebuildSnapshotLocked() {
 	}
 
 	byChEvalSys := make(map[ChannelEvalSystemKey]*SystemEvalData, len(s.state.ChannelSystemData))
-	trackedCh := make(map[string]map[string]map[string]bool, len(s.state.ChannelEvaluations))
-
 	for k, v := range s.state.ChannelSystemData {
 		copied := *v
-		copied.SingleJobs = v.SingleJobs
+		copied.DenseSingleJobs = v.DenseSingleJobs
 
 		copiedJobsByBase := make(map[string][]cuirass.Job, len(v.JobsByBase))
 		for basePkg, jobs := range v.JobsByBase {
@@ -880,23 +951,6 @@ func (s *Store) rebuildSnapshotLocked() {
 		}
 		copied.JobsByBase = copiedJobsByBase
 		byChEvalSys[k] = &copied
-
-		bySys, ok := trackedCh[k.Channel]
-		if !ok {
-			bySys = make(map[string]map[string]bool, len(s.state.Systems))
-			trackedCh[k.Channel] = bySys
-		}
-		sysMap, ok := bySys[k.System]
-		if !ok {
-			sysMap = make(map[string]bool, 512)
-			bySys[k.System] = sysMap
-		}
-		for basePkg := range v.SingleJobs {
-			sysMap[basePkg] = true
-		}
-		for basePkg := range v.JobsByBase {
-			sysMap[basePkg] = true
-		}
 	}
 
 	chURLs := make(map[string]string, len(s.state.ChannelServerURLs)+1)
@@ -906,18 +960,17 @@ func (s *Store) rebuildSnapshotLocked() {
 	}
 
 	snap := &Snapshot{
-		ServerURL:              s.state.ServerURL,
-		ChannelServerURLs:      chURLs,
-		Systems:                append([]string(nil), s.state.Systems...),
-		LastSyncedAt:           s.state.LastSyncedAt,
-		Evaluations:            evals,
-		ByEvalSystem:           byEvalSys,
-		TrackedBasePackages:    tracked,
-		GuixEvalByCommit:       guixByCommit,
-		GuixEvalIndexByCommit:  guixIdxByCommit,
-		ChannelEvaluations:     chEvals,
-		ByChannelEvalSystem:    byChEvalSys,
-		TrackedChannelPackages: trackedCh,
+		ServerURL:             s.state.ServerURL,
+		ChannelServerURLs:     chURLs,
+		Systems:               append([]string(nil), s.state.Systems...),
+		LastSyncedAt:          s.state.LastSyncedAt,
+		Evaluations:           evals,
+		ByEvalSystem:          byEvalSys,
+		GuixEvalByCommit:      guixByCommit,
+		GuixEvalIndexByCommit: guixIdxByCommit,
+		ChannelEvaluations:    chEvals,
+		ByChannelEvalSystem:   byChEvalSys,
+		pkgID:                 s.frozenPkgID,
 	}
 	s.snapshot.Store(snap)
 }

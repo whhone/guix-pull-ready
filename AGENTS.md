@@ -40,11 +40,11 @@
    - When an evaluation is near completion, the poller cross-checks `/build/<id>` for pending jobs (up to `--max-reconcile-pending`, default 40) and overrides finished statuses in-place so evaluations can transition to `Complete`.
 
 4. **Compact Job Storage (`internal/store`)**:
-   - A Guix evaluation has ~35,000 jobs per system. `SystemEvalData` stores single-job packages as 1-byte statuses in `SingleJobs` (`map[string]int8`) and only allocates slices in `JobsByBase` for multi-version packages (e.g. `gcc-toolchain`, `linux-libre`). Preserve this split when modifying store structures.
+   - A Guix evaluation has ~35,000 jobs per system. `SystemEvalData` stores single-job packages as 1-byte statuses in a pointer-free `DenseSingleJobs` (`[]int8` indexed by dense package ID) and only allocates slices in `JobsByBase` for multi-version packages (e.g. `gcc-toolchain`, `linux-libre`). Preserve this split when modifying store structures.
 
 5. **Package Spec Resolution (`internal/resolver`)**:
    - Specs strip `:output` suffixes (`bind:utils` -> `bind`) and split `@version` (`gcc-toolchain@14` -> `gcc-toolchain`, version prefix `14`), matching `<name>.<system>` and `base.<name>.<system>`.
-   - Packages absent from `TrackedBasePackages` (and `TrackedChannelPackages`) are reported in `untracked_packages` and skipped so local/custom packages do not block resolution.
+   - Packages absent from `Snapshot.IsPackageTracked` are reported in `untracked_packages` and skipped so local/custom packages do not block resolution.
    - Multi-version packages without `@version` select the highest version using `cuirass.VersionGreater` (GNU `strverscmp` / Guix `version>?`).
 
 6. **Zero External Dependencies**:

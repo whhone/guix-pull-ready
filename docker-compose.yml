@@ -5,6 +5,11 @@ services:
       context: .
       dockerfile: Containerfile
     restart: unless-stopped
+    mem_limit: 512m
+    memswap_limit: 512m
+    environment:
+      - GOGC=50
+      - GOMEMLIMIT=256MiB
     volumes:
       - data:/data
     command:

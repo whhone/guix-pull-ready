@@ -187,13 +187,12 @@ const (
 // by upstream Cuirass). Untracked specs are reported in Result.UntrackedPackages and skipped so
 // users piping `guix package --list-installed` are not blocked by third-party channel packages.
 func resolvePackageMode(snap *store.Snapshot, evals []store.EvaluationRecord, q Query, specs []string) (*Result, error) {
-	trackedMap := snap.TrackedBasePackages[q.System]
 	var trackedSpecs []string
 	var untrackedSpecs []string
 
 	for _, s := range specs {
 		name, _ := cuirass.SpecToNameAndVer(s)
-		if trackedMap != nil && trackedMap[name] {
+		if snap.IsPackageTracked("guix", q.System, name) {
 			trackedSpecs = append(trackedSpecs, s)
 		} else {
 			untrackedSpecs = append(untrackedSpecs, s)
@@ -218,7 +217,7 @@ func resolvePackageMode(snap *store.Snapshot, evals []store.EvaluationRecord, q 
 		allReady := true
 
 		for _, spec := range trackedSpecs {
-			st := evaluateSpecStatus(spec, q.System, data, q.AllowFailed)
+			st := evaluateSpecStatus(snap, spec, q.System, data, q.AllowFailed)
 			switch st {
 			case specStatusSucceeded:
 				succeededSpecs++
@@ -361,11 +360,6 @@ func resolveMultiChannelWholeEvalMode(snap *store.Snapshot, q Query, addChannels
 
 func resolveMultiChannelPackageMode(snap *store.Snapshot, q Query, specs []string, addChannels []string) (*Result, error) {
 	primaryAddCh := addChannels[0]
-	guixTracked := snap.TrackedBasePackages[q.System]
-	var ngTracked map[string]bool
-	if snap.TrackedChannelPackages != nil && snap.TrackedChannelPackages[primaryAddCh] != nil {
-		ngTracked = snap.TrackedChannelPackages[primaryAddCh][q.System]
-	}
 
 	var trackedSpecs []string
 	var untrackedSpecs []string
@@ -373,8 +367,8 @@ func resolveMultiChannelPackageMode(snap *store.Snapshot, q Query, specs []strin
 
 	for _, s := range specs {
 		name, _ := cuirass.SpecToNameAndVer(s)
-		inGuix := guixTracked != nil && guixTracked[name]
-		inNg := ngTracked != nil && ngTracked[name]
+		inGuix := snap.IsPackageTracked("guix", q.System, name)
+		inNg := snap.IsPackageTracked(primaryAddCh, q.System, name)
 		if inNg {
 			hasNonguixSpec = true
 		}
@@ -441,11 +435,11 @@ func resolveMultiChannelPackageMode(snap *store.Snapshot, q Query, specs []strin
 
 		for _, spec := range trackedSpecs {
 			name, _ := cuirass.SpecToNameAndVer(spec)
-			inNg := ngTracked != nil && ngTracked[name]
+			inNg := snap.IsPackageTracked(primaryAddCh, q.System, name)
 			var st specStatus
 			if inNg {
 				ngTotalSpecs++
-				st = evaluateSpecStatus(spec, q.System, ngData, q.AllowFailed)
+				st = evaluateSpecStatus(snap, spec, q.System, ngData, q.AllowFailed)
 				switch st {
 				case specStatusSucceeded:
 					ngSucceededSpecs++
@@ -455,7 +449,7 @@ func resolveMultiChannelPackageMode(snap *store.Snapshot, q Query, specs []strin
 					ngFailedSpecs++
 				}
 			} else {
-				st = evaluateSpecStatus(spec, q.System, guixData, q.AllowFailed)
+				st = evaluateSpecStatus(snap, spec, q.System, guixData, q.AllowFailed)
 			}
 
 			switch st {
@@ -521,27 +515,24 @@ func resolveMultiChannelPackageMode(snap *store.Snapshot, q Query, specs []strin
 }
 
 // evaluateSpecStatus checks a single package spec against an evaluation's job index.
-// It checks the O(1) SingleJobs map first (covering ~99% of packages), falling back
+// It checks the O(1) DenseSingleJobs array first (covering ~99% of packages), falling back
 // to ResolveJobsForSpec on JobsByBase for multi-version packages.
-func evaluateSpecStatus(spec string, targetSystem string, data *store.SystemEvalData, allowFailed bool) specStatus {
+func evaluateSpecStatus(snap *store.Snapshot, spec string, targetSystem string, data *store.SystemEvalData, allowFailed bool) specStatus {
 	name, _ := cuirass.SpecToNameAndVer(spec)
 	if name == "" || data == nil {
 		return specStatusMissing
 	}
-	if data.SingleJobs != nil {
-		if rawStatus, ok := data.SingleJobs[name]; ok {
-			st := cuirass.JobStatus(rawStatus)
-			if st.IsPending() {
-				return specStatusPending
-			}
-			if st.IsFailed() {
-				if allowFailed {
-					return specStatusSucceeded
-				}
-				return specStatusFailed
-			}
-			return specStatusSucceeded
+	if st, ok := snap.LookupSingleJob(data, name); ok {
+		if st.IsPending() {
+			return specStatusPending
 		}
+		if st.IsFailed() {
+			if allowFailed {
+				return specStatusSucceeded
+			}
+			return specStatusFailed
+		}
+		return specStatusSucceeded
 	}
 	matched := ResolveJobsForSpec(spec, targetSystem, data.JobsByBase)
 	return classifySpecJobs(matched, allowFailed)
